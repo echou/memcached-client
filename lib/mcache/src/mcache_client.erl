@@ -3,7 +3,7 @@
 
 %-compile([inline, native, {hipe,o3}]).
 
--behaviour(gen_server2).
+-behaviour(gen_server).
 
 -export([start_link/1]).
 -export([init/1,handle_call/3,handle_cast/2,handle_info/2,code_change/3,terminate/2]).
@@ -22,7 +22,7 @@
 -record(resp, {seq, status, opcode, data_type=0, cas=0, extra= <<>>, key= <<>>, body= <<>>}).
 
 start_link({Host, Port}) ->
-    gen_server2:start_link(?MODULE, [{Host, Port}], []).
+    gen_server:start_link(?MODULE, [{Host, Port}], []).
 
 init([{Host, Port}=Server]) ->
     process_flag(trap_exit, true),
@@ -142,10 +142,10 @@ terminate(_Reason, State) ->
     ok.
 
 
-% 需要特殊处理mget的getkq和noop序列
+% Handles mget sequences (getkq, getkq, ..., noop)
 handle_resp(#resp{opcode=getkq, seq=Seq}=Resp, {Ps, Ms}) ->
     NewMs = case dict:find(Seq, Ms) of 
-                error -> % 忽略
+                error -> % not found
                     Ms;
                 {ok, ItemDict} ->
                     case process_resp(Resp) of
@@ -155,10 +155,9 @@ handle_resp(#resp{opcode=getkq, seq=Seq}=Resp, {Ps, Ms}) ->
                             Ms
                     end
             end,
-    % 不会保存到Pending中
+
     {Ps, NewMs};
     
-% noop表示mget的结束，需要将结果reply回去了
 handle_resp(#resp{opcode=noop,seq=Seq}=Resp, {Ps, Ms}) ->
     case dict:find(Seq, Ms) of
         error -> 
@@ -174,7 +173,7 @@ handle_resp(#resp{opcode=noop,seq=Seq}=Resp, {Ps, Ms}) ->
 
     {dict:erase(Seq, Ps), dict:erase(Seq, Ms)};
 
-% 普通的响应
+% 锟斤拷通锟斤拷锟斤拷应
 handle_resp(#resp{seq=Seq}=Resp, {Ps, Ms}) ->
     case dict:find(Seq, Ps) of
         error -> 
@@ -191,11 +190,9 @@ handle_resp(#resp{seq=Seq}=Resp, {Ps, Ms}) ->
 
 % PUBLIC APIS
 
-% 阻塞式Get，结果格式为{Ref, {Key,Value}}，Value为undefined或{Val, Flags}
 mc_get(Server, Key) ->
     gen_server:call(get_client_pid(Server), {mc, {getk, Key}}).
 
-% 非阻塞式Get：调用方需主动receive结果，消息格式为{Ref, {Key, Value}}, Value为undefined或{Val, Flags}
 ab_get(Server, Key) ->
     gen_server:call(get_client_pid(Server), {mc_ab, {getk, Key}}).
 
@@ -286,7 +283,6 @@ send_req(Sock, Seq, {Op, Key, Delta, Initial, Expiry}) when Op=:=incr;Op=:=decr 
 	do_send_req(Sock, Seq, #req{opcode=Op, key=Key, extra= <<Delta:64, Initial:64, Expiry:32>>}).
 
 
-% 处理响应
 
 process_resp(#resp{opcode=noop}) ->
     {ok, noop};
