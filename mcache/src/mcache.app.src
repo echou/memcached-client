@@ -1,0 +1,12 @@
+% vim:syn=erlang
+{application, mcache,
+ [{description, "memcached client application"},
+  {vsn, "%VSN%"},
+  {modules, [%MODULES%]},
+  {registered, []},
+  {mod, {mcache_app, []}},
+  {env, []},
+  {applications, [kernel,stdlib]}
+ ]
+}.
+
