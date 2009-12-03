@@ -32,7 +32,7 @@ init([{Host, Port}=Server]) ->
 
     {ok, Sock, Ref} = async_connect(Host, Port, ?SOCK_OPTS, ?CONNECT_TIMEOUT),
 
-    {ok, #state{sock=not_connected, 
+    {ok, #state{sock=not_connected,
                 addr={Host, Port},
                 seq=0,
                 buffer= <<>>,
@@ -42,10 +42,10 @@ init([{Host, Port}=Server]) ->
 
 % HANDLE_CALL
 
-handle_call({mc, Req}, _From, #state{sock=not_connected}=State) -> 
+handle_call({mc, Req}, _From, #state{sock=not_connected}=State) ->
     {reply, {error, not_connected}, State};
 
-handle_call({mc, Req}, From, State) -> 
+handle_call({mc, Req}, From, State) ->
     case send_wrapper(Req, From, State) of
         {ok, NewState} ->
             {noreply, NewState};
@@ -60,7 +60,7 @@ handle_call({mc_ab, Req}, From, State) ->
         {Any, NewState} ->
             {reply, {error, Any}, NewState}
     end;
-    
+
 handle_call(_Req, _From, State) ->
     {noreply, State}.
 
@@ -68,8 +68,8 @@ send_wrapper({mget, Keys}=Req, From, #state{sock=Sock, seq=Seq, pendings=Ps, mge
     case (catch send_req(Sock, Seq, Req)) of
         true ->
             ItemDict = lists:foldl(fun(K, Acc) -> dict:store(K, undefined, Acc) end, dict:new(), Keys),
-            {ok, State#state{seq=Seq+1, 
-                        pendings=dict:store(Seq, {From, app_util:now()}, Ps), 
+            {ok, State#state{seq=Seq+1,
+                        pendings=dict:store(Seq, {From, app_util:now()}, Ps),
                         mgets=dict:store(Seq, ItemDict, Ms)}};
         _ ->
             {not_sent, State}
@@ -132,7 +132,7 @@ handle_info({tcp, Sock, Data}, #state{sock=Sock,buffer=Buf,pendings=Pendings, mg
 handle_info(Msg, State) ->
     %error_logger:info_msg("handle_info: ~p~n", [Msg]),
     {noreply, State}.
-    
+
 % MISC CALLBACKS
 
 code_change(_OldVsn, State, _Extra) ->
@@ -144,12 +144,12 @@ terminate(_Reason, State) ->
 
 % Handles mget sequences (getkq, getkq, ..., noop)
 handle_resp(#resp{opcode=getkq, seq=Seq}=Resp, {Ps, Ms}) ->
-    NewMs = case dict:find(Seq, Ms) of 
+    NewMs = case dict:find(Seq, Ms) of
                 error -> % not found
                     Ms;
                 {ok, ItemDict} ->
                     case process_resp(Resp) of
-                        {ok, {Key, Value}} -> 
+                        {ok, {Key, Value}} ->
                             dict:store(Seq, dict:store(Key, Value, ItemDict), Ms);
                         _ ->
                             Ms
@@ -157,10 +157,10 @@ handle_resp(#resp{opcode=getkq, seq=Seq}=Resp, {Ps, Ms}) ->
             end,
 
     {Ps, NewMs};
-    
+
 handle_resp(#resp{opcode=noop,seq=Seq}=Resp, {Ps, Ms}) ->
     case dict:find(Seq, Ms) of
-        error -> 
+        error ->
             Ms;
         {ok, ItemDict} ->
             case dict:find(Seq, Ps) of
@@ -173,10 +173,9 @@ handle_resp(#resp{opcode=noop,seq=Seq}=Resp, {Ps, Ms}) ->
 
     {dict:erase(Seq, Ps), dict:erase(Seq, Ms)};
 
-% ��ͨ����Ӧ
 handle_resp(#resp{seq=Seq}=Resp, {Ps, Ms}) ->
     case dict:find(Seq, Ps) of
-        error -> 
+        error ->
             ignore;
         {ok, {From, _Time}} ->
             Result = case (catch process_resp(Resp)) of
@@ -213,7 +212,7 @@ mc_delete(Server, Key) ->
 
 ab_delete(Server, Key) ->
 	gen_server:cast(get_client_pid(Server), {mc, {delete, Key}}).
-	
+
 
 % internal apis
 
@@ -228,16 +227,16 @@ get_client_pid(Server) ->
 
 async_connect({A,B,C,D}=_Addr, Port, Opts, Time) ->
     case inet:connect_options(Opts, inet) of
-        {error, Reason} -> 
+        {error, Reason} ->
             exit(Reason);
         {ok, #connect_opts{fd=Fd, ifaddr=BAddr={_,_,_,_}, port=BPort, opts=SockOpts}} ->
             case inet:open(Fd,BAddr,BPort,SockOpts,tcp,inet,?MODULE) of
                 {ok, S} ->
                     prim_inet:async_connect(S, {A,B,C,D}, Port, Time);
-                Error -> 
+                Error ->
                     Error
             end;
-        {ok, _} = Any -> 
+        {ok, _} = Any ->
             exit(badarg)
     end.
 
@@ -289,7 +288,7 @@ process_resp(#resp{opcode=noop}) ->
 
 process_resp(#resp{opcode=get, status=Status, extra=Extra, body=Value}) ->
     case Status of
-        ok -> 
+        ok ->
             <<Flags:32>> = Extra,
             {ok, {Value, Flags}};
         _ -> {ok, undefined}
@@ -297,7 +296,7 @@ process_resp(#resp{opcode=get, status=Status, extra=Extra, body=Value}) ->
 
 process_resp(#resp{opcode=getk, status=Status, extra=Extra, key=Key, body=Value}) ->
     case Status of
-        ok -> 
+        ok ->
             <<Flags:32>> = Extra,
             {ok, {Key, {Value, Flags}}};
         _ -> {ok, {Key, undefined}}
@@ -305,7 +304,7 @@ process_resp(#resp{opcode=getk, status=Status, extra=Extra, key=Key, body=Value}
 
 process_resp(#resp{opcode=getkq, status=Status, extra=Extra, key=Key, body=Value}) ->
     case Status of
-        ok -> 
+        ok ->
             <<Flags:32>> = Extra,
             {ok, {Key, {Value, Flags}}};
         _ -> {ok, {Key, undefined}}
@@ -323,9 +322,6 @@ process_resp(#resp{opcode=version, status=ok, body=Body}) ->
 process_resp(#resp{opcode=_, status=Status}) ->
 	Status.
 
-%-record(req, {opcode, key_len, extra_len, data_type, body_len, cas, extra, body}).
-%erlang:port_command(Sock, [16#80, mcache_proto:opcode(getk), <<KeyLen:16, 0, 0, 0:16, KeyLen:32, Seq:32, 0:64>>, Key]),
-
 gen_req(Seq, #req{opcode=Opcode,
                   data_type=DataType,
                   cas=CAS,
@@ -336,7 +332,7 @@ gen_req(Seq, #req{opcode=Opcode,
 	BodyLen = iolist_size(Body),
 	ExtraLen = iolist_size(Extra),
 	TotalBodyLen = KeyLen + BodyLen + ExtraLen,
-	[16#80,						% MAGIC
+    [16#80,						% MAGIC
      mcache_proto:opcode(Opcode),	% Opcode
      <<KeyLen:16,					% Key length
        ExtraLen:8,				% Extra length
@@ -361,7 +357,7 @@ test_get(P, R, S, K) ->
     stresstest:start("mcache_client:get", P, R, F).
 
 test_get2(P, R) ->
-    F = fun(_) -> 
+    F = fun(_) ->
             memcached_api:get(webqq, <<"439311075:friends">>)
         end,
     stresstest:start("memcached_client:get", P, R, F).
