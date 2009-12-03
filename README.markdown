@@ -7,4 +7,17 @@ modules.
 
 ## Usage
 
+1. Get a single key.
+   
+   <pre>
+   mcache:get(Class, Key).
+   </pre>
+   
+   For example: <code>mcache:get(my.friends, foobar)</code> gets the key <code>"my.friends:foobar"</code>
+   
+   Return values:
+   - <code>undefined</code>, if key not found.
+   - <code>Value</code>, any other values.
+
+
 
