@@ -8,7 +8,6 @@
 -export([start_link/1]).
 -export([init/1,handle_call/3,handle_cast/2,handle_info/2,code_change/3,terminate/2]).
 -export([mc_get/2, ab_get/2, ab_mget/2, mc_set/5, ab_set/5, mc_delete/2, ab_delete/2]).
--export([test_get/4, test_get2/2]).
 
 -include_lib("kernel/src/inet_int.hrl").
 
@@ -69,7 +68,7 @@ send_wrapper({mget, Keys}=Req, From, #state{sock=Sock, seq=Seq, pendings=Ps, mge
         true ->
             ItemDict = lists:foldl(fun(K, Acc) -> dict:store(K, undefined, Acc) end, dict:new(), Keys),
             {ok, State#state{seq=Seq+1,
-                        pendings=dict:store(Seq, {From, app_util:now()}, Ps),
+                        pendings=dict:store(Seq, {From, erlang:now()}, Ps),
                         mgets=dict:store(Seq, ItemDict, Ms)}};
         _ ->
             {not_sent, State}
@@ -77,7 +76,7 @@ send_wrapper({mget, Keys}=Req, From, #state{sock=Sock, seq=Seq, pendings=Ps, mge
 send_wrapper(Req, From, #state{sock=Sock, seq=Seq, pendings=Ps}=State) ->
     case (catch send_req(Sock, Seq, Req)) of
         true ->
-            {ok, State#state{seq=Seq+1, pendings=dict:store(Seq, {From, app_util:now()}, Ps)}};
+            {ok, State#state{seq=Seq+1, pendings=dict:store(Seq, {From, erlang:now()}, Ps)}};
         _ ->
             {not_sent, State}
     end.
@@ -217,7 +216,7 @@ ab_delete(Server, Key) ->
 % internal apis
 
 get_client_pid(Server) ->
-    case app_util:pg2_get_closest_pid({?PG2_GROUP_TAG, Server}) of
+    case pg2:get_closest_pid({?PG2_GROUP_TAG, Server}) of
         {error, {no_process, _Reason}} ->
             exit(no_process);
         Pid when is_pid(Pid) ->
@@ -248,7 +247,7 @@ do_parse(<<16#81, Opcode, KeyLen:16, ExtraLen, DataType, Status:16, TotalBodyLen
                 data_type=DataType,
                 cas=CAS,
                 extra=Extra,
-				key=Key,
+                key=Key,
                 body=Body},
     do_parse(Rest, [Resp|Acc]);
 do_parse(Data, Acc) ->
@@ -351,13 +350,3 @@ do_send_req(Sock, Seq, [Req]) ->
     erlang:port_command(Sock, gen_req(Seq, Req));
 do_send_req(Sock, Seq, Req) ->
     erlang:port_command(Sock, gen_req(Seq, Req)).
-
-test_get(P, R, S, K) ->
-    F = fun(_) -> mc_get(S, K) end,
-    stresstest:start("mcache_client:get", P, R, F).
-
-test_get2(P, R) ->
-    F = fun(_) ->
-            memcached_api:get(webqq, <<"439311075:friends">>)
-        end,
-    stresstest:start("memcached_client:get", P, R, F).
