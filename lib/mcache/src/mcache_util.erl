@@ -2,11 +2,9 @@
 %%%=========================================================================
 %%%  Memcached utils helper
 %%%=========================================================================
--author('thijsterlouw@tencent.com').
+-author('thijsterlouw@gmail.com').
 
--include("webqq_log.hrl").
-
--export([now/0, hash/2, pmap/3, floor/1, ceiling/1, get_app_env/2, make_atom_name/2, make_atom_name/3, reload_config/1]).
+-export([now/0, hash/2, floor/1, ceiling/1, get_app_env/2, make_atom_name/2, make_atom_name/3, reload_config/1]).
 
 now() ->
 	{MegaS, S, _MicroS} = erlang:now(),
@@ -16,55 +14,10 @@ hash(Key, crc) ->
     erlang:crc32(Key);
 hash(Key, erlang) ->
     erlang:phash2(Key);
-hash(Key, fnv) ->
-    app_nifs:fnv_hash(Key);
 hash(Key, md5) ->
     <<Int:32/unsigned-little-integer,  _:12/binary>> = erlang:md5(Key),
     Int.
 
-
-pmap(Fun, List, Timeout) ->
-	Parent = self(),
-	Pids = 
-		[	
-			spawn(fun() -> 
-						Parent ! {self(), (try Fun(Elem) catch ErrType:ErrReason -> ?DEBUG("~p pmap caught: ~p, ~p", [self(), ErrType,ErrReason]), [] end)} 
-					end)
-			|| Elem <- List
-		],
-	
-	[
-		receive 
-			{Pid, Val} -> Val 
-		after Timeout ->
-			exit(timeout)
-		end 
-		|| Pid <- Pids
-	].	
-
-
-pmap3(Fun, List, Timeout) ->
-	Parent = self(),
-	%Pids = 
-	%	[	
-	%		spawn(fun() -> Parent ! {self(), (catch Fun(Elem))} end)
-	%		|| Elem <- List
-	%	],
-	
-	{Pids, Pid2ElemAcc} = lists:foldl(fun(Elem, {PidAcc, Pid2ElemAcc}) ->
-										Pid = spawn(fun() -> Parent ! {self(), (catch Fun(Elem))} end),
-										{[Pid|PidAcc], dict:store(Pid, Elem, Pid2ElemAcc)}
-									end,
-									{[], dict:new()},
-									List),	
-	[
-		receive 
-			{Pid, Val} -> Val 
-		after Timeout ->
-			exit(timeout)
-		end 
-		|| Pid <- Pids
-	].	
 
 floor(X) ->
 	T = erlang:trunc(X),

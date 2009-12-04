@@ -1,4 +1,4 @@
-NATIVE=1
+#NATIVE=1
 
 APP_NAME=mcache
 #ERL_COMPILE_FLAGS += -I ../include 

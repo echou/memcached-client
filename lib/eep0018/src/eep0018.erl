@@ -3,7 +3,7 @@
 
 -behaviour(gen_linkedin_driver).
 
--export([start/0, start_link/0, encode/1, decode/1, test_decode/1]).
+-export([start/0, start_link/0, encode/1, decode/1]).
 -export([driver_info/0]).
 
 % callback
