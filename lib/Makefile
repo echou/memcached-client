@@ -1,3 +1,3 @@
 include $(ERL_TOP)/make/subdir.mk
 
-SUB_DIRECTORIES = mcache
+SUB_DIRECTORIES = eep0018 mcache
