@@ -1,0 +1,5 @@
+ebin
+priv
+lib/*/obj
+lib/*/ebin
+lib/*/priv
