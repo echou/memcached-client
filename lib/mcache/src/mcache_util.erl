@@ -5,6 +5,7 @@
 -author('thijsterlouw@gmail.com').
 
 -export([now/0, hash/2, floor/1, ceiling/1, get_app_env/2, make_atom_name/2, make_atom_name/3, reload_config/1]).
+-export([gb_trees_find/4]).
 
 now() ->
 	{MegaS, S, _MicroS} = erlang:now(),
@@ -94,3 +95,15 @@ make_appl(App) when is_atom(App) ->
 
 
 
+gb_trees_find(H, nil, {LH, _} = L, L) when H >= LH ->
+    -1;
+gb_trees_find(H, nil, R, {RH,_} = R) when H < RH ->
+    -2;
+gb_trees_find(H, nil, L, {RH, I}=R) ->
+    I;
+gb_trees_find(H, {K,V,_,_}, _Left, _Right) when H=:=K ->
+    V;
+gb_trees_find(H, {K,V,S,_}, Left, _Right) when H<K->
+    gb_trees_find(H, S, Left, {K,V});
+gb_trees_find(H, {K,V,_,L}, _Left, Right) when H>K ->
+    gb_trees_find(H, L, {K,V}, Right).

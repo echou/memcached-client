@@ -32,6 +32,7 @@ gen(Pools, Mode) ->
                         {Name, S, C}
                     end,
                     Pools),
+    %io:format("~p~n", [Continuums]),
     Code = codegen(Mode, Continuums),
     {Continuums, compile(Code)}.
 
@@ -210,38 +211,63 @@ continuum_val(Index) ->
 	
     lists:flatten([?HEADER, Func]);
 
-codegen(gb_trees, {Servers, Continuum}) ->
-    {_,C} = gb_trees:from_orddict(Continuum),
+codegen(gb_trees, Continuums) ->
+    ServersFunc = [ lists:map(
+                        fun({PoolName, Servers, _Continuum}) ->
+                            io_lib:format("servers(~p) -> ~p;~n", [PoolName, list_to_tuple(Servers)])
+                        end,
+                        Continuums),
+                    "servers(_) -> erlang:error(not_implemented).\n\n"],
 
-	Func = io_lib:format(
-"-define(CONTINUUM, ~p).
--define(SERVERS, ~p).
-	
-find(Hash) ->
-	ServerIndex = find_1(Hash, ?CONTINUUM),
-    element(ServerIndex, ?SERVERS).
+    ContinuumsFunc = [ lists:map(
+                        fun({PoolName, _Servers, Continuum}) ->
+                            {_,C} = gb_trees:from_orddict(Continuum),
+                            io_lib:format("continuums(~p) -> ~p;~n", [PoolName, C])
+                        end,
+                        Continuums),
+                    "continuums(_) -> erlang:error(not_implemented).\n\n"],
 
-find_1(_H, nil) -> 1;
-find_1(H,{K,V,_,L}) when H>K ->
-    case L of
-        nil -> V;
-        {K1,_,_,_} when H<K1 -> V;
-        _ -> find_1(H,L)
-    end;
-find_1(H,{K,_,S,_}) when H<K ->
-    find_1(H,S);
-find_1(H,{K,V,_,_}) when H=:=K ->
-    V.
+    MinContinuumFunc = [ lists:map(
+                        fun({PoolName, _Servers, [{Hash,Index}|_]}) ->
+                            io_lib:format("min_continuum(~p) -> ~p;~n", [PoolName, {Hash,Index}])
+                        end,
+                        Continuums),
+                    "min_continuum(_) -> erlang:error(not_implemented).\n\n"],
+    MaxContinuumFunc = [ lists:map(
+                        fun({PoolName, _Servers, C}) ->
+                            [{Hash,Index}|_] = lists:reverse(C),
+                            io_lib:format("max_continuum(~p) -> ~p;~n", [PoolName, {Hash,Index}])
+                        end,
+                        Continuums),
+                    "max_continuum(_) -> erlang:error(not_implemented).\n\n"],
+
+	FindFunc = 
+"find(PoolName, Hash) ->
+    Index = case mcache_util:gb_trees_find(Hash, continuums(PoolName), min_continuum(PoolName), max_continuum(PoolName)) of
+                -1 -> {_,I} = min_continuum(PoolName), I;
+                -2 -> {_,I} = max_continuum(PoolName), I;
+                Any -> Any
+            end,
+    element(Index, servers(PoolName)).
 ",
-[C, list_to_tuple(Servers)]),
+
+    Header =
+"-module(mcache_continuum).
+-author('echou327@gmail.com').
+-compile(inline).
+-export([find/2, continuums/1]).
+
+% auto-generated code. DO NOT EDIT.
+",
 	
-    lists:flatten([?HEADER, Func]);
+    lists:flatten([Header, ServersFunc, ContinuumsFunc, MinContinuumFunc, MaxContinuumFunc, FindFunc]);
 
 codegen(_, _) ->
     erlang:error(not_implemented).
 
 
 compile(Code) ->
+    %io:format("~s~n", [Code]),
 	{M, B} = dynamic_compile:from_string(Code),
     code:load_binary(M, "", B),
     Code.

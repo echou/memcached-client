@@ -118,7 +118,7 @@ parse_pools(Pools) ->
 						{Name, Servers}
 					end,
 					Pools),
-    {NewPools, _} = mcache_continuum_gen:gen(Continuums, case_when),
+    {NewPools, _} = mcache_continuum_gen:gen(Continuums, gb_trees),
 
     PoolsDict = lists:foldl(
                 fun(PoolConfig, Acc) ->
