@@ -4,7 +4,9 @@
 %%%=========================================================================
 -author('thijsterlouw@gmail.com').
 
--export([now/0, hash/2, floor/1, ceiling/1, get_app_env/2, make_atom_name/2, make_atom_name/3, reload_config/1]).
+-compile([inline, native, {hipe, o3}]).
+
+-export([now/0, hash/2, floor/1, ceiling/1, get_app_env/2, make_atom_name/2, make_atom_name/3, reload_config/1, sup_child_spec/3, sup_child_spec/2]).
 -export([gb_trees_find/4]).
 
 now() ->
@@ -51,6 +53,29 @@ make_atom_name(First, Second) ->
 	
 make_atom_name(First, Second, Third) ->
 	list_to_atom(lists:flatten(io_lib:format("~p_~p_~p", [First, Second, Third]))).	
+
+
+format_atom(Format, Args) ->
+    list_to_atom(lists:flatten(io_lib:format(Format, Args))).
+    % }}}
+
+% 是否在本node中启动该进程, 如果不设置，缺省为启动
+module_enabled(Module) ->
+    module_enabled(Module, 1).
+
+module_enabled(Module, DefaultCount) ->
+    Key = format_atom("enable_~p", [Module]),
+    get_app_env(Key, DefaultCount).
+
+sup_child_spec(Module, Fun, Count) ->
+    N = module_enabled(Module, Count),
+    lists:map(fun(I) ->
+        % Id = format_atom("~p_~p", [Module, I]),
+        Fun(Module, {Module, I})
+    end, lists:seq(0, N-1)).
+
+sup_child_spec(Module, Fun) ->
+    sup_child_spec(Module, Fun, 1).
 
 
 %supply a list of application names to restart (as atoms). 

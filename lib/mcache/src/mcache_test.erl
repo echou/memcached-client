@@ -37,6 +37,19 @@ test_mget(P, R, memcached_api) ->
     stresstest:start("test_mget", P, R, F).
 
 
+gen_continuum(Mode) ->
+    Servers = [
+        {{10,0,1,1}, 11211, 600},
+        {{10,0,1,2}, 11211, 300},
+        {{10,0,1,3}, 11211, 200},
+        {{10,0,1,4}, 11211, 350},
+        {{10,0,1,5}, 11211, 1000},
+        {{10,0,1,6}, 11211, 800},
+        {{10,0,1,7}, 11211, 950},
+        {{10,0,1,8}, 11211, 100}
+    ],
+    mcache_continuum_gen:gen([{generic, Servers},{foobar, Servers}], Mode).
+
 
 validate_continuum(Mode) ->
     Servers = [

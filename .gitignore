@@ -1,3 +1,4 @@
+*.dump
 ebin
 priv
 lib/*/obj

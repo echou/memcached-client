@@ -48,12 +48,12 @@ init([]) ->
 % supervisor local functions
 specs(Specs) ->
     lists:foldl(fun({Module, Count}, Acc) ->
-                    Acc ++ app_util:sup_child_spec(Module, fun one_spec/2, Count)
+                    Acc ++ mcache_util:sup_child_spec(Module, fun one_spec/2, Count)
                 end, [], Specs).
 
 one_spec(mcache_config, Id) ->
-    PoolsConfig = app_util:get_app_env(pools, []),
-    ExpiresConfig = app_util:get_app_env(expires, []),
+    PoolsConfig = mcache_util:get_app_env(pools, []),
+    ExpiresConfig = mcache_util:get_app_env(expires, []),
     {Id, {mcache_config, start_link, [ {PoolsConfig, ExpiresConfig} ]}, permanent, 2000, worker, []};
 one_spec(mcache_client_sup, Id) ->
     {Id, {mcache_client_sup, start_link, []}, permanent, infinity, supervisor, []};

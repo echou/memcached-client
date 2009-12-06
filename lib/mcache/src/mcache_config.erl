@@ -33,16 +33,14 @@ init({Pools, Expires}=Opts) ->
 handle_call({update_expires, Info}, _From, #state{expires=OldExpires, initial_expires=InitialExpires}=State) ->
 	NewExpires = case Info of
 					restore ->		
-						% »Ö¸´³õÊ¼ÅäÖÃ
+						% restore to initial config
 						InitialExpires;
 					{assign, Expires} -> 
-						% ÉèÖÃÐÂÒ»Ì×ÅäÖÃ
+						% set a new set of config
 						Expires;
 					{delete, Class} ->
-						% É¾³ýÄ³¸öClassµÄÅäÖÃ
 						proplists:delete(Class, OldExpires);
 					{set, Class, {PoolName, Expiry}} -> 
-						% ÉèÖÃÄ³¸öClassÅäÖÃ
 						Expires1 = proplists:delete(Class, OldExpires),
 						[{Class, {PoolName, Expiry}}|Expires1];
 					_ ->
@@ -113,9 +111,10 @@ parse_pools(Pools) ->
     io:format("[MCACHE_CONFIG] Generating mcache_continuum module ...~n", []),
     Continuums = lists:map(
 					fun(PoolConfig) ->
-						Name = proplists:get_value(name, PoolConfig),
-						Servers = proplists:get_value(servers, PoolConfig),
-						{Name, Servers}
+						Name = proplists:get_value(name, PoolConfig, generic),
+						Servers = proplists:get_value(servers, PoolConfig, []),
+                        Servers1 = [normalize_server(S) || S <- Servers],
+						{Name, Servers1}
 					end,
 					Pools),
     {NewPools, _} = mcache_continuum_gen:gen(Continuums, gb_trees),
@@ -133,10 +132,35 @@ parse_pools(Pools) ->
             {ok, PoolConfig} = dict:find(Name, PoolsDict),
             ConnectionCount = proplists:get_value(connection_count, PoolConfig, 10),
             lists:foreach(
-                fun({Host,Port}=Addr) ->
-                    io:format("[MCACHE_CONFIG] Starting mcache clients (~p) to ~p ...~n", [ConnectionCount, Addr]),
+                fun({{A,B,C,D}=Host,Port}) ->
+                    io:format("[MCACHE_CONFIG] Starting ~p mcache clients at [~p, ~p.~p.~p.~p:~p] ...~n", [ConnectionCount, Name, A,B,C,D,Port]),
                     mcache_client_sup:start_child(Name, {Host, Port}, ConnectionCount)
                 end,
                 Servers)
         end,
         NewPools).
+
+normalize_server({{_,_,_,_}=Addr, Port, Weight}) ->
+    {Addr, Port, Weight};
+normalize_server({Addr, Port, Weight}) when is_list(Addr) ->
+    {Addr1, _} = normalize_addr(Addr),
+    {Addr1, Port, Weight};
+normalize_server({Addr, Weight}) ->
+    {Addr1, Port1} = normalize_addr(Addr),
+    {Addr1, Port1, Weight}.
+
+normalize_addr(Addr) when is_list(Addr) ->
+    case string:tokens(Addr, ":") of
+        [IP] ->
+            {ok, Addr1} = inet:getaddr(IP, inet),
+            {Addr1, 11211};
+        [IP,PortStr|_] ->
+            {ok, Addr1} = inet:getaddr(IP, inet),
+            Port1 = case string:to_integer(PortStr) of
+                        {Port, []} -> Port;
+                        _ -> 11211
+                    end,
+            {Addr1, Port1};
+        _ ->
+            {{127,0,0,1}, 11211}
+    end.
