@@ -249,27 +249,30 @@ send_req(Sock, Seq, {mget, Keys}) ->
     do_send_req(Sock, Seq, lists:reverse([#req{opcode=noop}|Reqs]));
 
 send_req(Sock, Seq, noop) ->
-	do_send_req(Sock, Seq, #req{opcode=noop});
+    do_send_req(Sock, Seq, #req{opcode=noop});
 
 send_req(Sock, Seq, version) ->
-	do_send_req(Sock, Seq, #req{opcode=version});
+    do_send_req(Sock, Seq, #req{opcode=version});
 
 send_req(Sock, Seq, {delete, Key}) ->
-	do_send_req(Sock, Seq, #req{opcode=delete, key=Key});
+    do_send_req(Sock, Seq, #req{opcode=delete, key=Key});
 
 send_req(Sock, Seq, {flush, Expiry}) ->
-	do_send_req(Sock, Seq, #req{opcode=flush, extra= <<Expiry:32>>});
+    do_send_req(Sock, Seq, #req{opcode=flush, extra= <<Expiry:32>>});
 send_req(Sock, Seq, flush) ->
-	do_send_req(Sock, Seq, #req{opcode=flush});
+    do_send_req(Sock, Seq, #req{opcode=flush});
 
 send_req(Sock, Seq, {getk, Key}) ->
-	do_send_req(Sock, Seq, #req{opcode=getk, key=Key});
+    do_send_req(Sock, Seq, #req{opcode=getk, key=Key});
+
+send_req(Sock, Seq, {getkq, Key}) ->
+    do_send_req(Sock, Seq, #req{opcode=getk, key=Key});
 
 send_req(Sock, Seq, {Op, Key, Value, Flags, Expiry}) when Op=:=set;Op=:=add;Op=:=replace ->
-	do_send_req(Sock, Seq, #req{opcode=Op, key=Key, body=Value, extra= <<Flags:32, Expiry:32>>});
+    do_send_req(Sock, Seq, #req{opcode=Op, key=Key, body=Value, extra= <<Flags:32, Expiry:32>>});
 
 send_req(Sock, Seq, {Op, Key, Delta, Initial, Expiry}) when Op=:=incr;Op=:=decr ->
-	do_send_req(Sock, Seq, #req{opcode=Op, key=Key, extra= <<Delta:64, Initial:64, Expiry:32>>}).
+    do_send_req(Sock, Seq, #req{opcode=Op, key=Key, extra= <<Delta:64, Initial:64, Expiry:32>>}).
 
 
 
