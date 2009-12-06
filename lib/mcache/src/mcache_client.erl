@@ -265,9 +265,6 @@ send_req(Sock, Seq, flush) ->
 send_req(Sock, Seq, {getk, Key}) ->
     do_send_req(Sock, Seq, #req{opcode=getk, key=Key});
 
-send_req(Sock, Seq, {getkq, Key}) ->
-    do_send_req(Sock, Seq, #req{opcode=getk, key=Key});
-
 send_req(Sock, Seq, {Op, Key, Value, Flags, Expiry}) when Op=:=set;Op=:=add;Op=:=replace ->
     do_send_req(Sock, Seq, #req{opcode=Op, key=Key, body=Value, extra= <<Flags:32, Expiry:32>>});
 
