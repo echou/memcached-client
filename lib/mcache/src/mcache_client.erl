@@ -13,13 +13,12 @@
 
 -define(PG2_GROUP_TAG, ?MODULE).
 -define(SOCK_OPTS, [binary, {active, true}, {delay_send, false}, {nodelay, true}, {packet, raw}]).
--define(CONNECT_TIMEOUT, 1000).
--define(RECONNECT_AFTER, 2000).
+-define(CONNECT_TIMEOUT, 2000).
+-define(RECONNECT_AFTER, 5000).
 
--record(state, {addr, seq=0, buffer, pendings, sock=not_connected, connecting}).
+-record(state, {addr, seq=0, parser, pendings, sock=not_connected, connecting}).
 
--record(req, {opcode=get, data_type=0, cas=0, extra= <<>>, key= <<>>, body= <<>>}).
--record(resp, {seq, status, opcode, data_type=0, cas=0, extra= <<>>, key= <<>>, body= <<>>}).
+-include("mcache_binary_frame.hrl").
 
 -record(pending, {from, time}).
 -record(mget_pending, {from, time, items}).
@@ -38,7 +37,7 @@ init([{Host, Port}=Server]) ->
     {ok, #state{sock=not_connected,
                 addr={Host, Port},
                 seq=0,
-                buffer= <<>>,
+                parser=mcache_binary_frame:initial_state(),
                 pendings=dict:new(),
                 connecting={Sock, Ref}}}.
 
@@ -118,18 +117,18 @@ handle_info(reconnect, #state{addr={Host, Port}}=State) ->
     {ok, Sock, Ref} = async_connect(Host, Port, ?SOCK_OPTS, ?CONNECT_TIMEOUT),
     {noreply, State#state{sock=not_connected, connecting={Sock, Ref}}, hibernate};
 
-handle_info({tcp, Sock, Data}, #state{sock=Sock,buffer=Buf,pendings=Pendings}=State) ->
-    {NewBuf, Resps} = do_parse_packet(<<Buf/binary,Data/binary>>, []),
+handle_info({tcp, Sock, Data}, #state{sock=Sock,parser=Parser,pendings=Pendings}=State) ->
+    {NewParser, Resps} = mcache_binary_frame:parse(Parser, Data),
     case Resps of
         [] ->
-            {noreply, State#state{buffer=NewBuf}};
+            {noreply, State#state{parser=NewParser}};
         [_|_] ->
             NewPendings = lists:foldl(fun handle_one_resp/2, Pendings, Resps),
-            {noreply, State#state{buffer=NewBuf,pendings=NewPendings}}
+            {noreply, State#state{parser=NewParser,pendings=NewPendings}}
     end;
 
 handle_info(_Msg, State) ->
-    %error_logger:info_msg("handle_info: ~p~n", [Msg]),
+    %error_logger:info_msg("handle_info: ~p~n", [_Msg]),
     {noreply, State}.
 
 % MISC CALLBACKS
@@ -143,7 +142,7 @@ terminate(_Reason, _State) ->
 socket_close(#state{sock=not_connected, pendings=Pendings}=State) ->
     flush_pendings(Pendings, {error, closed}),
     erlang:send_after(?RECONNECT_AFTER, self(), reconnect),
-    State#state{connecting=undefined, pendings=dict:new(), buffer= <<>>};
+    State#state{connecting=undefined, pendings=dict:new(), parser=mcache_binary_frame:initial_state()};
 socket_close(#state{sock=Sock}=State) when is_port(Sock) ->
     catch gen_tcp:close(Sock),
     socket_close(State#state{sock=not_connected}).
@@ -152,7 +151,7 @@ socket_close(#state{sock=Sock}=State) when is_port(Sock) ->
 handle_one_resp(#resp{opcode=getkq, seq=Seq}=Resp, Pendings) ->
     case dict:find(Seq, Pendings) of
         {ok, #mget_pending{items=Items}=P} ->
-            case parse_resp(Resp) of
+            case decode_resp(Resp) of
                 {ok, {Key, Value}} ->
                     NewItems = dict:store(Key, Value, Items),
                     dict:store(Seq, P#mget_pending{items=NewItems}, Pendings);
@@ -176,7 +175,7 @@ handle_one_resp(#resp{opcode=noop,seq=Seq}, Pendings) ->
 handle_one_resp(#resp{seq=Seq}=Resp, Pendings) ->
     case dict:find(Seq, Pendings) of
         {ok, #pending{from=From}} ->
-            Result = case (catch parse_resp(Resp)) of
+            Result = case (catch decode_resp(Resp)) of
                         {ok, Any} -> Any;
                         {'EXIT', Reason} -> {error, Reason};
                         Status -> Status
@@ -228,6 +227,7 @@ async_connect({A,B,C,D}=_Addr, Port, Opts, Time) ->
             exit(badarg)
     end.
 
+% don't use it any more
 do_parse_packet(<<16#81, Opcode, KeyLen:16, ExtraLen, DataType, Status:16, TotalBodyLen:32, Seq:32, CAS:64, 
                   Extra:ExtraLen/binary, Key:KeyLen/binary, Rest/binary>>, Acc) ->
     BodyLen = TotalBodyLen - ExtraLen - KeyLen,
@@ -244,48 +244,41 @@ do_parse_packet(<<16#81, Opcode, KeyLen:16, ExtraLen, DataType, Status:16, Total
 do_parse_packet(Data, Acc) ->
     {Data, lists:reverse(Acc)}.
 
-send_req(Sock, Seq, {mget, Keys}) ->
-    Reqs = [ #req{opcode=getkq, key=K} || K <- Keys ],
-    do_send_req(Sock, Seq, lists:reverse([#req{opcode=noop}|Reqs]));
+do_send_req(Sock, [_|_]=Reqs) ->
+    erlang:port_command(Sock, [ mcache_binary_frame:encode(Req) || Req <- Reqs ]);
+do_send_req(Sock, Req) ->
+    erlang:port_command(Sock, mcache_binary_frame:encode(Req)).
 
-send_req(Sock, Seq, noop) ->
-    do_send_req(Sock, Seq, #req{opcode=noop});
+send_req(Sock, Seq, {mget, Keys}) ->
+    Reqs = [ #req{opcode=getkq, seq=Seq, key=K} || K <- Keys ],
+    do_send_req(Sock, lists:reverse([#req{opcode=noop, seq=Seq}|Reqs]));
 
 send_req(Sock, Seq, version) ->
-    do_send_req(Sock, Seq, #req{opcode=version});
+    do_send_req(Sock, #req{opcode=version, seq=Seq});
 
 send_req(Sock, Seq, {delete, Key}) ->
-    do_send_req(Sock, Seq, #req{opcode=delete, key=Key});
+    do_send_req(Sock, #req{opcode=delete, seq=Seq, key=Key});
 
 send_req(Sock, Seq, {flush, Expiry}) ->
-    do_send_req(Sock, Seq, #req{opcode=flush, extra= <<Expiry:32>>});
+    do_send_req(Sock, #req{opcode=flush, seq=Seq, extra= <<Expiry:32>>});
 send_req(Sock, Seq, flush) ->
-    do_send_req(Sock, Seq, #req{opcode=flush});
+    do_send_req(Sock, #req{opcode=flush, seq=Seq});
 
 send_req(Sock, Seq, {getk, Key}) ->
-    do_send_req(Sock, Seq, #req{opcode=getk, key=Key});
+    do_send_req(Sock, #req{opcode=getk, seq=Seq, key=Key});
 
 send_req(Sock, Seq, {Op, Key, Value, Flags, Expiry}) when Op=:=set;Op=:=add;Op=:=replace ->
-    do_send_req(Sock, Seq, #req{opcode=Op, key=Key, body=Value, extra= <<Flags:32, Expiry:32>>});
+    do_send_req(Sock, #req{opcode=Op, seq=Seq, key=Key, body=Value, extra= <<Flags:32, Expiry:32>>});
 
 send_req(Sock, Seq, {Op, Key, Delta, Initial, Expiry}) when Op=:=incr;Op=:=decr ->
-    do_send_req(Sock, Seq, #req{opcode=Op, key=Key, extra= <<Delta:64, Initial:64, Expiry:32>>}).
+    do_send_req(Sock, #req{opcode=Op, seq=Seq, key=Key, extra= <<Delta:64, Initial:64, Expiry:32>>}).
 
 
 
-parse_resp(#resp{opcode=noop}) ->
+decode_resp(#resp{opcode=noop}) ->
     {ok, noop};
 
-% not used !!
-parse_resp(#resp{opcode=get, status=Status, extra=Extra, body=Value}) ->
-    case Status of
-        ok ->
-            <<Flags:32>> = Extra,
-            {ok, {Value, Flags}};
-        _ -> {ok, undefined}
-    end;
-
-parse_resp(#resp{opcode=getk, status=Status, extra=Extra, key=Key, body=Value}) ->
+decode_resp(#resp{opcode=getk, status=Status, extra=Extra, key=Key, body=Value}) ->
     case Status of
         ok ->
             <<Flags:32>> = Extra,
@@ -294,7 +287,7 @@ parse_resp(#resp{opcode=getk, status=Status, extra=Extra, key=Key, body=Value}) 
             {ok, {Key, undefined}}
     end;
 
-parse_resp(#resp{opcode=getkq, status=Status, extra=Extra, key=Key, body=Value}) ->
+decode_resp(#resp{opcode=getkq, status=Status, extra=Extra, key=Key, body=Value}) ->
     case Status of
         ok ->
             <<Flags:32>> = Extra,
@@ -303,46 +296,17 @@ parse_resp(#resp{opcode=getkq, status=Status, extra=Extra, key=Key, body=Value})
             {ok, {Key, undefined}}
     end;
 
-parse_resp(#resp{opcode=incr, status=ok, body= <<Value:64>>}) ->
+decode_resp(#resp{opcode=incr, status=ok, body= <<Value:64>>}) ->
 	{ok, Value};
 
-parse_resp(#resp{opcode=decr, status=ok, body= <<Value:64>>}) ->
+decode_resp(#resp{opcode=decr, status=ok, body= <<Value:64>>}) ->
 	{ok, Value};
 
-parse_resp(#resp{opcode=version, status=ok, body=Body}) ->
+decode_resp(#resp{opcode=version, status=ok, body=Body}) ->
 	{ok, binary_to_list(Body)};
 
-parse_resp(#resp{opcode=_, status=Status}) ->
+decode_resp(#resp{opcode=_, status=Status}) ->
 	Status.
-
-
-gen_one_req(Seq, #req{opcode=Opcode,
-                  data_type=DataType,
-                  cas=CAS,
-                  extra=Extra,
-                  key=Key,
-                  body=Body}=_Req) ->
-	KeyLen = iolist_size(Key),
-	BodyLen = iolist_size(Body),
-	ExtraLen = iolist_size(Extra),
-	TotalBodyLen = KeyLen + BodyLen + ExtraLen,
-    [16#80,						% MAGIC
-     mcache_proto:opcode(Opcode),	% Opcode
-     <<KeyLen:16,					% Key length
-       ExtraLen:8,				% Extra length
-       DataType:8,				% Data type
-       0:16,						% Reserved
-       TotalBodyLen:32,			% Total body length
-       Seq:32,					% Opaque (as Seq)
-       CAS:64>>,					% CAS
-     Extra,
-     Key,
-     Body].
-
-do_send_req(Sock, Seq, [_|_]=Reqs) ->
-    erlang:port_command(Sock, [ gen_one_req(Seq, Req) || Req <- Reqs ]);
-do_send_req(Sock, Seq, Req) ->
-    erlang:port_command(Sock, gen_one_req(Seq, Req)).
 
 
 % ======================================================= 

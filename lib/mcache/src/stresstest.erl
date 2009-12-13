@@ -2,6 +2,8 @@
 
 -export([start/4]).
 
+-compile(inline).
+
 -record(results, {
             label,
 			con = 100, 			% concurrency
@@ -88,24 +90,23 @@ run_test({ReportPid, Requests}, MFA) ->
 			ok
 	end.
 			
-run_test1({ReportPid, Requests}, MFA) when is_function(MFA) ->
-	Tick = now(),
-    lists:foreach(MFA, lists:seq(0, Requests-1)),
-    Now = now(),
-    ReportPid ! {finish, self(), timer:now_diff(Now, Tick), Requests};
 run_test1({ReportPid, Requests}, MFA) ->
 	Tick = now(),
-    lists:foreach(
-        fun(I) ->
-            call(MFA, I)
-        end, lists:seq(0, Requests-1)
-    ),
+    run_test2(MFA, 0, Requests),
     Now = now(),
     ReportPid ! {finish, self(), timer:now_diff(Now, Tick), Requests}.
+
+run_test2(_MFA, _Index, 0) ->
+    ok;
+run_test2(MFA, Index, Left) ->
+    call(MFA, Index),
+    erlang:yield(),
+    run_test2(MFA, Index+1, Left-1).
+    
 
 call({M,F,A}, I) ->
     erlang:apply(M,F,[I|A]);
 call({F, A}, I) when is_function(F) ->
     erlang:apply(F, [I|A]);
-call(F, I) when is_function(F) ->
+call(F, I) ->
     F(I).

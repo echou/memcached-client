@@ -1,13 +1,14 @@
 -module(mcache).
 -author('echou327@gmail.com').
 
--compile([inline, native]).
--export([get_server/2, get/2, mget/1, mget/2, set/5, set/4, delete/2, mget2/2]).
+%-compile([inline, native, {hipe, o3}]).
+
+-export([get_server/2, get/2, mget/2, set/5, set/4, delete/2]).
 
 -define(SEP, ":").
--define(MGET_TIMEOUT, 1000).
+-define(MGET_TIMEOUT, 500).
 -define(FMT_RAW, 0).
--define(FMT_BJSON, 100). % not implemented yet.
+%-define(FMT_BJSON, 100). 
 -define(FMT_NATIVE, 101).
 -define(FMT_JSON, 102).
 -define(FMT_INT, 103).
@@ -17,65 +18,19 @@ get(Class, Key) ->
     {_, Value} = mcache_client:mc_get(Server, Key1),
 	decode_value(Value).
 
-mget(Class, [Key]) ->
-    case ?MODULE:get(Class, Key) of
-        undefined -> [];
-        Value -> [{Key, Value}] % already decoded in get()
-    end;
 mget(Class, [_|_]=Keys) ->
-    KeyDict = lists:foldl(
-                fun(K, Acc) ->
-                    {K1, Server, _DefaultExpiry} = get_server(Class, K),
-                    RealKey = list_to_binary(K1), % must convert to binary because response key is a binary
-                    mcache_client:ab_get(Server, RealKey),
-                    orddict:store(RealKey, K, Acc)
-                end, orddict:new(), Keys),
-    ValueDict = mget_receive(length(Keys), ?MGET_TIMEOUT, dict:new()),
-    Result = orddict:fold(fun(RealKey, Key, Acc) ->
-                        case dict:find(RealKey, ValueDict) of
-                            error -> Acc;
-                            {ok, undefined} -> Acc;
-                            {ok, Value} -> [{Key, decode_value(Value)}|Acc]
-                        end
-                    end, [], KeyDict),
-    lists:reverse(Result).
-
-
-mget2(Class, [_|_]=Keys) ->
     {KeyDict, ServerDict} = lists:foldl(
                                 fun(K, {KAcc,SAcc}) ->
                                     {K1, Server, _DefaultExpiry} = get_server(Class, K),
-                                    RealKey = list_to_binary(K1), % must convert to binary because response key is a binary
+                                    RealKey = iolist_to_binary(K1), % must convert to binary because response key is a binary
                                     {orddict:store(RealKey, K, KAcc), dict:append(Server, RealKey, SAcc)}
                                 end, {orddict:new(), dict:new()}, Keys),
     dict:fold(fun(Server, Keys1, Acc) ->
                 mcache_client:ab_mget(Server, Keys1),
                 Acc
               end, nil, ServerDict),
-    ValueDict = mget_receive(length(Keys), ?MGET_TIMEOUT, dict:new()),
-    Result = orddict:fold(fun(RealKey, Key, Acc) ->
-                        case dict:find(RealKey, ValueDict) of
-                            error -> Acc;
-                            {ok, undefined} -> Acc;
-                            {ok, Value} -> [{Key, decode_value(Value)}|Acc]
-                        end
-                    end, [], KeyDict),
-    lists:reverse(Result).
-
-mget([{Class, Key}]) ->
-    case ?MODULE:get(Class, Key) of
-        undefined -> [];
-        Value -> [{{Class, Key}, Value}] % already decoded in get()
-    end;
-mget([{_Class, _Keys}|_] = KeyPairs) ->
-    KeyDict = lists:foldl(
-                fun({Class, K}=Key, Acc) ->
-                    {K1, Server, _DefaultExpiry} = get_server(Class, K),
-                    K2 = list_to_binary(K1),
-                    mcache_client:ab_get(Server, K2),
-                    orddict:store(K2, Key, Acc)
-                end, orddict:new(), KeyPairs),
-    ValueDict = mget_receive(length(KeyPairs), 1000, dict:new()),
+    ValueDict = mget_receive(orddict:size(KeyDict), ?MGET_TIMEOUT, dict:new()),
+    %ValueDict = dict:new(),
     Result = orddict:fold(fun(RealKey, Key, Acc) ->
                         case dict:find(RealKey, ValueDict) of
                             error -> Acc;
@@ -102,27 +57,32 @@ delete(Class, Key) ->
 
 % internal functions
 
+my_now() ->
+    erlang:now().
+
 mget_receive(0, _Timeout, D) ->
     D;
 mget_receive(_N, Timeout, D) when Timeout =< 0 ->
     D;
 mget_receive(N, Timeout, D) ->
-    Now = app_util:now(),
+    Now = my_now(),
     receive
-        {Ref, {mget, Items}} when is_reference(Ref) ->
-            Now1 = app_util:now(),
-            TimeoutLeft = round(Timeout - timer:now_diff(Now1, Now) / 1000),
-            D1 = dict:merge(fun(_K,_V1,V2) -> V2 end, D, Items),
-            mget_receive(N-dict:size(Items), TimeoutLeft, D1);
-        {Ref, {Key, Value}}=Msg when is_reference(Ref) ->
-            Now1 = app_util:now(),
-            TimeoutLeft = round(Timeout - timer:now_diff(Now1, Now) / 1000),
-            mget_receive(N-1, TimeoutLeft, dict:store(Key, Value, D));
         Any ->
-            io:format("~p~n", [Any]),
-            Now1 = app_util:now(),
-            TimeoutLeft = round(Timeout - timer:now_diff(Now1, Now) / 1000),
-            mget_receive(N, TimeoutLeft, D)
+            case Any of
+                {Ref, {mget, Items}} when is_reference(Ref) ->
+                    Now1 = my_now(),
+                    TimeoutLeft = round(Timeout - timer:now_diff(Now1, Now) / 1000),
+                    D1 = dict:merge(fun(_K,_V1,V2) -> V2 end, D, Items),
+                    mget_receive(N-dict:size(Items), TimeoutLeft, D1);
+                {Ref, {Key, Value}}=Msg when is_reference(Ref) ->
+                    Now1 = my_now(),
+                    TimeoutLeft = round(Timeout - timer:now_diff(Now1, Now) / 1000),
+                    mget_receive(N-1, TimeoutLeft, dict:store(Key, Value, D));
+                _ ->
+                    Now1 = my_now(),
+                    TimeoutLeft = round(Timeout - timer:now_diff(Now1, Now) / 1000),
+                    mget_receive(N, TimeoutLeft, D)
+            end
     after Timeout ->
         D
     end.
