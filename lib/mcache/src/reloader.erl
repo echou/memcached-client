@@ -102,7 +102,14 @@ doit(From, To) ->
              io:format("Error reading ~s's file info: ~p~n",
                        [Filename, Reason]),
              error
-     end || {Module, Filename} <- code:all_loaded(), is_list(Filename)].
+     end || {Module, Filename} <- code:all_loaded(), is_custom_module(Filename)].
+
+is_custom_module(Filename) when is_atom(Filename) ->
+    false;
+is_custom_module([])  ->
+    false;
+is_custom_module(Filename) ->
+    lists:prefix(code:root_dir(), Filename) =:= false.
 
 stamp() ->
     erlang:localtime().

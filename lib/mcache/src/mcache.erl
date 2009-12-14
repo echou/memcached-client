@@ -1,17 +1,17 @@
 -module(mcache).
 -author('echou327@gmail.com').
 
-%-compile([inline, native, {hipe, o3}]).
+-compile([inline]). %, native, {hipe, o3}]).
 
 -export([get_server/2, get/2, mget/2, set/5, set/4, delete/2]).
 
 -define(SEP, ":").
 -define(MGET_TIMEOUT, 500).
 -define(FMT_RAW, 0).
-%-define(FMT_BJSON, 100). 
 -define(FMT_NATIVE, 101).
 -define(FMT_JSON, 102).
 -define(FMT_INT, 103).
+
 
 get(Class, Key) ->
     {Key1, Server, _DefaultExpiry} = get_server(Class, Key),
@@ -19,26 +19,26 @@ get(Class, Key) ->
 	decode_value(Value).
 
 mget(Class, [_|_]=Keys) ->
+    erlang:yield(),
     {KeyDict, ServerDict} = lists:foldl(
                                 fun(K, {KAcc,SAcc}) ->
                                     {K1, Server, _DefaultExpiry} = get_server(Class, K),
                                     RealKey = iolist_to_binary(K1), % must convert to binary because response key is a binary
-                                    {orddict:store(RealKey, K, KAcc), dict:append(Server, RealKey, SAcc)}
-                                end, {orddict:new(), dict:new()}, Keys),
-    dict:fold(fun(Server, Keys1, Acc) ->
-                mcache_client:ab_mget(Server, Keys1),
-                Acc
-              end, nil, ServerDict),
-    ValueDict = mget_receive(orddict:size(KeyDict), ?MGET_TIMEOUT, dict:new()),
-    %ValueDict = dict:new(),
-    Result = orddict:fold(fun(RealKey, Key, Acc) ->
-                        case dict:find(RealKey, ValueDict) of
-                            error -> Acc;
-                            {ok, undefined} -> Acc;
-                            {ok, Value} -> [{Key, decode_value(Value)}|Acc]
-                        end
-                    end, [], KeyDict),
-    lists:reverse(Result).
+                                    {dict:append(RealKey, K, KAcc), dict:append(Server, RealKey, SAcc)}
+                                end, {dict:new(), dict:new()}, Keys),
+    Ref = erlang:make_ref(),
+    dict:map(fun(Server, Ks) -> mcache_client:ab_mget(Server, Ref, Ks) end, ServerDict),
+    %lib:flush_receive(),
+    Results = mget_receive(dict:size(KeyDict), Ref, ?MGET_TIMEOUT*1000, []),
+    flat_foldl(
+        fun({RealKey, Val}, LAcc) ->
+            case dict:find(RealKey, KeyDict) of
+                {ok, Key} ->
+                    [{Key, decode_value(Val)}|LAcc];
+                _ ->
+                    LAcc
+            end
+        end, [], Results).
 
 set(Class, Key, Value, Format, Expiry) ->
 	{Key1, Server, DefaultExpiry} = get_server(Class, Key),
@@ -57,36 +57,43 @@ delete(Class, Key) ->
 
 % internal functions
 
+flat_foldl(_Fun, Acc, []) ->
+    Acc;
+flat_foldl(Fun, Acc, [H|T]) ->
+    Acc1 = case H of
+            [] -> Acc;
+            [_|_] -> flat_foldl(Fun, Acc, H);
+            _ -> Fun(H, Acc)
+        end,
+    flat_foldl(Fun, Acc1, T).
+
 my_now() ->
     erlang:now().
 
-mget_receive(0, _Timeout, D) ->
-    D;
-mget_receive(_N, Timeout, D) when Timeout =< 0 ->
-    D;
-mget_receive(N, Timeout, D) ->
+wrap_items(nil, L) ->
+    L;
+wrap_items(Items, L) ->
+    [Items|L].
+
+mget_receive(0, _Ref, _Timeout, L) ->
+    L;
+mget_receive(_N, _Ref, Timeout, L) when Timeout =< 0 ->
+    L;
+mget_receive(N, Ref, Timeout, L) ->
     Now = my_now(),
+    TimeoutMillis = Timeout div 1000,
     receive
         Any ->
-            case Any of
-                {Ref, {mget, Items}} when is_reference(Ref) ->
-                    Now1 = my_now(),
-                    TimeoutLeft = round(Timeout - timer:now_diff(Now1, Now) / 1000),
-                    D1 = dict:merge(fun(_K,_V1,V2) -> V2 end, D, Items),
-                    mget_receive(N-dict:size(Items), TimeoutLeft, D1);
-                {Ref, {Key, Value}}=Msg when is_reference(Ref) ->
-                    Now1 = my_now(),
-                    TimeoutLeft = round(Timeout - timer:now_diff(Now1, Now) / 1000),
-                    mget_receive(N-1, TimeoutLeft, dict:store(Key, Value, D));
-                _ ->
-                    Now1 = my_now(),
-                    TimeoutLeft = round(Timeout - timer:now_diff(Now1, Now) / 1000),
-                    mget_receive(N, TimeoutLeft, D)
-            end
-    after Timeout ->
-        D
+            Now1 = my_now(),
+            T1 = Timeout - timer:now_diff(Now1, Now),
+            {L1, N1} = case Any of 
+                        {Ref, {mget, NumKeys, Items}} -> {wrap_items(Items, L), N-NumKeys};
+                        _ -> {L, N}
+                    end,
+            mget_receive(N1, Ref, T1, L1)
+    after TimeoutMillis ->
+        L
     end.
-
 
 cast([H]) when H>255;is_atom(H) ->
     cast(H);

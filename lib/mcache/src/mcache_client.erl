@@ -7,7 +7,7 @@
 
 -export([start_link/1]).
 -export([init/1,handle_call/3,handle_cast/2,handle_info/2,code_change/3,terminate/2]).
--export([mc_get/2, ab_get/2, mc_mget/2, ab_mget/2, mc_set/5, ab_set/5, mc_delete/2, ab_delete/2]).
+-export([mc_get/2, ab_get/2, mc_mget/2, ab_mget/3, mc_set/5, ab_set/5, mc_delete/2, ab_delete/2]).
 
 -include_lib("kernel/src/inet_int.hrl").
 
@@ -21,7 +21,7 @@
 -include("mcache_binary_frame.hrl").
 
 -record(pending, {from, time}).
--record(mget_pending, {from, time, items}).
+-record(mget_pending, {from, time, num_keys, items}).
 
 start_link({Host, Port}) ->
     gen_server:start_link(?MODULE, [{Host, Port}], []).
@@ -68,8 +68,7 @@ handle_call(_Req, _From, State) ->
 send_wrapper({mget, Keys}=Req, From, #state{sock=Sock, seq=Seq, pendings=Pendings}=State) ->
     case (catch send_req(Sock, Seq, Req)) of
         true ->
-            Items = lists:foldl(fun(K, Dict) -> dict:store(K, undefined, Dict) end, dict:new(), Keys),
-            P = #mget_pending{from=From, time=erlang:now(), items=Items},
+            P = #mget_pending{from=From, time=erlang:now(), num_keys=length(Keys), items=nil},
             {ok, State#state{seq=Seq+1, pendings=dict:store(Seq,P,Pendings)}};
         _ ->
             {not_sent, State}
@@ -87,6 +86,11 @@ send_wrapper(Req, From, #state{sock=Sock, seq=Seq, pendings=Pendings}=State) ->
 
 handle_cast({mc, _Req}, #state{sock=not_connected}=State) ->
     {noreply, State};
+
+handle_cast({mc_ab, {mget, From, Keys}}, State) ->
+    %error_logger:info_msg("handle_cast(mget, ~p, ~p)~n", [Pid, Keys]),
+    {_, State1} = send_wrapper({mget, Keys}, From, State),
+    {noreply, State1};
 
 handle_cast({mc, Req}, #state{sock=Sock, seq=Seq}=State) ->
     case (catch send_req(Sock, Seq, Req)) of
@@ -147,14 +151,18 @@ socket_close(#state{sock=Sock}=State) when is_port(Sock) ->
     catch gen_tcp:close(Sock),
     socket_close(State#state{sock=not_connected}).
 
+prepend_list(Key, Value, nil) ->
+    [{Key,Value}];
+prepend_list(Key, Value, L) ->
+    [{Key,Value}|L].
+
 % Handles mget sequences (getkq, getkq, ..., noop)
 handle_one_resp(#resp{opcode=getkq, seq=Seq}=Resp, Pendings) ->
     case dict:find(Seq, Pendings) of
         {ok, #mget_pending{items=Items}=P} ->
             case decode_resp(Resp) of
                 {ok, {Key, Value}} ->
-                    NewItems = dict:store(Key, Value, Items),
-                    dict:store(Seq, P#mget_pending{items=NewItems}, Pendings);
+                    dict:store(Seq, P#mget_pending{items=prepend_list(Key,Value,Items)}, Pendings);
                 _ ->
                     Pendings
             end;
@@ -164,8 +172,8 @@ handle_one_resp(#resp{opcode=getkq, seq=Seq}=Resp, Pendings) ->
 
 handle_one_resp(#resp{opcode=noop,seq=Seq}, Pendings) ->
     case dict:find(Seq, Pendings) of
-        {ok, #mget_pending{from=From, items=Items}} ->
-            gen_server:reply(From, {mget, Items});
+        {ok, #mget_pending{from=From, num_keys=NumKeys, items=Items}} ->
+            gen_server:reply(From, {mget, NumKeys, Items});
         _ ->
             ok
     end,
@@ -187,17 +195,16 @@ handle_one_resp(#resp{seq=Seq}=Resp, Pendings) ->
     dict:erase(Seq, Pendings).
 
 flush_pendings(Pendings, Result) ->
-    dict:fold(
-        fun(_Seq, #pending{from=From}, Any) ->
-            gen_server:reply(From, Result), 
-            Any;
-        (_Seq, #mget_pending{from=From, items=Items}, Any) ->
+    dict:map(
+        fun(_Seq, #pending{from=From}) ->
+            gen_server:reply(From, Result),
+            ok;
+        (_Seq, #mget_pending{from=From, items=Items}) ->
             gen_server:reply(From, {mget, Items}),
-            Any;
-        (_, _, Any) ->
-            Any
+            ok;
+        (_, _) ->
+            ok
         end,
-        nil,
         Pendings).
 
 
@@ -226,23 +233,6 @@ async_connect({A,B,C,D}=_Addr, Port, Opts, Time) ->
         {ok, _} ->
             exit(badarg)
     end.
-
-% don't use it any more
-do_parse_packet(<<16#81, Opcode, KeyLen:16, ExtraLen, DataType, Status:16, TotalBodyLen:32, Seq:32, CAS:64, 
-                  Extra:ExtraLen/binary, Key:KeyLen/binary, Rest/binary>>, Acc) ->
-    BodyLen = TotalBodyLen - ExtraLen - KeyLen,
-    <<Body:BodyLen/binary, Rest1/binary>> = Rest,
-    Resp= #resp{seq=Seq,
-                opcode=mcache_proto:opcode(Opcode),
-                status=mcache_proto:status(Status),
-                data_type=DataType,
-                cas=CAS,
-                extra=Extra,
-                key=Key,
-                body=Body},
-    do_parse_packet(Rest1, [Resp|Acc]);
-do_parse_packet(Data, Acc) ->
-    {Data, lists:reverse(Acc)}.
 
 do_send_req(Sock, [_|_]=Reqs) ->
     erlang:port_command(Sock, [ mcache_binary_frame:encode(Req) || Req <- Reqs ]);
@@ -322,8 +312,10 @@ ab_get(Server, Key) ->
 mc_mget(Server, Keys) ->
     gen_server:call(get_client_pid(Server), {mc, {mget, Keys}}).
 
-ab_mget(Server, Keys) ->
-    gen_server:call(get_client_pid(Server), {mc_ab, {mget, Keys}}).
+ab_mget(Server, Ref, Keys) ->
+    % gen_server:call(get_client_pid(Server), {mc_ab, {mget, Keys}}).
+    gen_server:cast(get_client_pid(Server), {mc_ab, {mget, {self(), Ref}, Keys}}).
+
 
 mc_set(Server, Key, Value, Flags, Expiry) ->
 	gen_server:call(get_client_pid(Server), {mc, {set, Key, Value, Flags, Expiry}}).
