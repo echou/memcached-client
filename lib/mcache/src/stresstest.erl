@@ -100,7 +100,7 @@ run_test2(_MFA, _Index, 0) ->
     ok;
 run_test2(MFA, Index, Left) ->
     call(MFA, Index),
-    erlang:yield(),
+    %erlang:yield(),
     run_test2(MFA, Index+1, Left-1).
     
 

@@ -1,7 +1,8 @@
 -module(mcache).
 -author('echou327@gmail.com').
 
--compile([inline]). %, native, {hipe, o3}]).
+%-compile([inline]). 
+%-compile([native, {hipe, o3}]).
 
 -export([get_server/2, get/2, mget/2, set/5, set/4, delete/2]).
 
@@ -23,12 +24,12 @@ mget(Class, [_|_]=Keys) ->
     {KeyDict, ServerDict} = lists:foldl(
                                 fun(K, {KAcc,SAcc}) ->
                                     {K1, Server, _DefaultExpiry} = get_server(Class, K),
-                                    RealKey = iolist_to_binary(K1), % must convert to binary because response key is a binary
-                                    {dict:append(RealKey, K, KAcc), dict:append(Server, RealKey, SAcc)}
+                                    {dict:store(K1, K, KAcc), dict:append(Server, K1, SAcc)}
                                 end, {dict:new(), dict:new()}, Keys),
     Ref = erlang:make_ref(),
-    dict:map(fun(Server, Ks) -> mcache_client:ab_mget(Server, Ref, Ks) end, ServerDict),
-    %lib:flush_receive(),
+    dict:map(fun(Server, Ks) -> 
+                mcache_client:ab_mget(Server, Ref, Ks) 
+            end, ServerDict),
     Results = mget_receive(dict:size(KeyDict), Ref, ?MGET_TIMEOUT*1000, []),
     flat_foldl(
         fun({RealKey, Val}, LAcc) ->
@@ -75,22 +76,16 @@ wrap_items(nil, L) ->
 wrap_items(Items, L) ->
     [Items|L].
 
-mget_receive(0, _Ref, _Timeout, L) ->
-    L;
-mget_receive(_N, _Ref, Timeout, L) when Timeout =< 0 ->
+mget_receive(N, _Ref, Timeout, L) when N =< 0; Timeout =< 0 ->
     L;
 mget_receive(N, Ref, Timeout, L) ->
     Now = my_now(),
     TimeoutMillis = Timeout div 1000,
     receive
-        Any ->
+        {Ref, {mget, NumKeys, Items}} -> 
             Now1 = my_now(),
             T1 = Timeout - timer:now_diff(Now1, Now),
-            {L1, N1} = case Any of 
-                        {Ref, {mget, NumKeys, Items}} -> {wrap_items(Items, L), N-NumKeys};
-                        _ -> {L, N}
-                    end,
-            mget_receive(N1, Ref, T1, L1)
+            mget_receive(N-NumKeys, Ref, T1, wrap_items(Items, L))
     after TimeoutMillis ->
         L
     end.
@@ -109,7 +104,7 @@ cast(V) when is_integer(V) ->
     integer_to_list(V).
 
 map_key(Class, Key) ->
-    [cast(Class), ":"|cast(Key)].
+    iolist_to_binary([cast(Class), ":", cast(Key)]).
 
 get_server(Class, Key) ->
     Key1 = map_key(Class, Key),
