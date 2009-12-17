@@ -10,7 +10,7 @@ using namespace std;
 #define CMD_SET_SERVERS 0
 #define CMD_SET 1
 #define CMD_MGET 2
-#define CMD_SET_ASYNC 3
+#define CMD_MGET_BY_CLASS 3
 
 class Cache 
 {
@@ -37,6 +37,7 @@ public:
         memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_BINARY_PROTOCOL, 1);
         memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_NO_BLOCK, 1);
         memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_TCP_NODELAY, 1);
+        memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_SORT_HOSTS, 1);
     }
 
 private:
@@ -164,10 +165,8 @@ private:
             free_list.push_back(result);
             td.open_tuple();
             td.add_buf(result->key, result->key_length);
-            td.open_tuple();
             td.add_buf(memcached_string_value(&(result->value)), memcached_string_length(&(result->value)));
             td.add_uint(result->flags);
-            td.close_tuple();
             td.close_tuple();
         } 
         td.close_list();

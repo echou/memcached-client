@@ -42,7 +42,9 @@ config_change(_Changed, _New, _Removed) ->
 init([]) ->
     io:format("[MCACHE] Starting~n"),
     Specs = specs([{mcache_client_sup, 1}, % must be 1
-                   {mcache_config, 1}]),  % must be 1
+                   {mcache_config, 1},
+                   {mcache_memcached_drv_sup, 1}
+                   ]),  % must be 1
     {ok, {{one_for_one, 10, 10}, Specs}}.
 
 % supervisor local functions
@@ -57,5 +59,7 @@ one_spec(mcache_config, Id) ->
     {Id, {mcache_config, start_link, [ {PoolsConfig, ExpiresConfig} ]}, permanent, 2000, worker, []};
 one_spec(mcache_client_sup, Id) ->
     {Id, {mcache_client_sup, start_link, []}, permanent, infinity, supervisor, []};
+one_spec(mcache_memcached_drv_sup, Id) ->
+    {Id, {mcache_memcached_drv_sup, start_link, []}, permanent, infinity, supervisor, []};
 one_spec(Module, Id) ->
     {Id, {Module, start_link, []}, permanent, 2000, worker, []}.

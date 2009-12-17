@@ -25,9 +25,9 @@ test_set(P, R) ->
     stresstest:start("test_set", P, R, F).
 
 
-test_mget(P, R) ->
+test_mget(P, R, M) ->
     F = fun(I) ->
-            mcache:mget(mcache.test, [<<"key:", V:32>> || V <- lists:seq(I, I + 20)])
+            M:mget(mcache.test, [<<"key:", V:32>> || V <- lists:seq(I, I + 20)])
         end,
     stresstest:start("test_mget", P, R, F).
 

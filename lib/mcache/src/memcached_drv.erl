@@ -7,7 +7,7 @@
 % API
 -export([start_link/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3, terminate/2]).
--export([set_servers/2, set_async/2]).
+-export([set_servers/2]).
 -export([mget/2, mget/3, set/5, set/6]).
 
 -record(state, {pool, servers}).
@@ -20,7 +20,7 @@
 -define(CMD_SET_SERVERS, 0).
 -define(CMD_SET, 1).
 -define(CMD_MGET, 2).
--define(CMD_SET_ASYNC, 3).
+-define(CMD_MGET_BY_CLASS, 3).
 
 start_link(PoolName, Servers) ->
     gen_server:start_link(?MODULE, [PoolName, Servers], []).
@@ -54,13 +54,6 @@ init([PoolName, Servers]) ->
 
 handle_call(_, _, State) ->
     {noreply, State}.
-
-on_off(on) -> 1;
-on_off(_) -> 0.
-
-handle_cast({set_async, OnOff}, State) ->
-    [ port_control(Port, ?CMD_SET_ASYNC, [on_off(OnOff)]) || Port <- get_all_driver_ports(State#state.pool) ],
-    {noreply, State};
 
 handle_cast({set_servers, Servers}, State) ->
     [ port_control(Port, ?CMD_SET_SERVERS, [Servers, 0]) || Port <- get_all_driver_ports(State#state.pool) ],
@@ -148,15 +141,6 @@ set_servers(Pool, Servers) ->
             false
     end.
 
-set_async(Pool, OnOff) ->
-    case pg2:get_local_members({?MODULE, Pool}) of
-        [_|_]=Pids ->
-            [gen_server:cast(Pid, {set_async, OnOff})||Pid<-Pids],
-            ok;
-        _ ->
-            false
-    end.
-
 mget(Pool, Keys) -> mget(Pool, 0, Keys).
 
 mget(Pool, Seq, [_|_]=Keys) ->
@@ -168,6 +152,23 @@ mget(Pool, Seq, [_|_]=Keys) ->
                     end, [<<Seq:32, NumKeys:32>>], Keys),
     Data1 = lists:reverse(Data),
     send_command(Port, [?CMD_MGET|Data1]).
+
+class_to_iolist(Class) when is_atom(Class) ->
+    atom_to_list(Class);
+class_to_iolist(Class) when is_list(Class); is_binary(Class) ->
+    Class.
+
+mget_by_class(Pool, Seq, Class, [_|_]=Keys) ->
+    Port = get_driver_port(Pool),
+    NumKeys = length(Keys),
+    Class1 = class_to_iolist(Class),
+    ClassLen = iolist_size(Class1),
+    Data = lists:foldl(fun(K,A) -> 
+                        KLen = iolist_size(K),
+                        [K, <<KLen:32>>|A]
+                    end, [<<Seq:32, NumKeys:32, ClassLen:32>>, Class1], Keys),
+    Data1 = lists:reverse(Data),
+    send_command(Port, [?CMD_MGET_BY_CLASS|Data1]).
 
 set(Pool, Key, Value, Flags, Expires) -> set(Pool, 0, Key, Value, Flags, Expires).
 
