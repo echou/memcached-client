@@ -140,12 +140,14 @@ parse_pools(Pools) ->
         end,
         NewPools).
 
-normalize_server({{_,_,_,_}=Addr, Port, Weight}) ->
-    {Addr, Port, Weight};
-normalize_server({Addr, Port, Weight}) when is_list(Addr) ->
-    {Addr1, _} = normalize_addr(Addr),
-    {Addr1, Port, Weight};
-normalize_server({Addr, Weight}) ->
+% now only allow "A.B.C.D:11211" style address
+
+%normalize_server({{_,_,_,_}=Addr, Port, Weight}) ->
+%    {Addr, Port, Weight};
+%normalize_server({Addr, Port, Weight}) when is_list(Addr) ->
+%    {Addr1, _} = normalize_addr(Addr),
+%    {Addr1, Port, Weight};
+normalize_server({Addr, Weight}) when is_list(Addr), is_integer(Weight) ->
     {Addr1, Port1} = normalize_addr(Addr),
     {Addr1, Port1, Weight}.
 
