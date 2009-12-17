@@ -18,7 +18,7 @@ init([]) ->
     Specs = lists:map(fun(Pool) ->
                     Name = proplists:get_value(name, Pool),
                     Servers = proplists:get_value(servers, Pool),
-                    S1 = string:join([Addr||{Addr, _}<-Servers], ","),
+                    S1 = string:join([Addr ++ ":" ++ integer_to_list(Weight)||{Addr, Weight}<-Servers], ","),
                     { {memcached_drv, Name}, 
                       {memcached_drv, start_link, [Name, S1]}, 
                       permanent, 2000, worker, [] 

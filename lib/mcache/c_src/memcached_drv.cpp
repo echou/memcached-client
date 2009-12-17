@@ -33,7 +33,7 @@ public:
 
     void initBehaviors() 
     {
-        memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_KETAMA, 1);
+        memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED, 1);
         memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_BINARY_PROTOCOL, 1);
         memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_NO_BLOCK, 1);
         memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_TCP_NODELAY, 1);
