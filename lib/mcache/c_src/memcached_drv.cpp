@@ -8,9 +8,11 @@
 using namespace std;
 
 #define CMD_SET_SERVERS 0
-#define CMD_SET 1
-#define CMD_MGET 2
-#define CMD_MGET_BY_CLASS 3
+
+#define CMD_GET     1
+#define CMD_MGET    2
+#define CMD_SET     3
+#define CMD_DELETE  4
 
 class Cache 
 {
@@ -27,17 +29,17 @@ public:
 
         int ret = memcached_server_push(mc, s);
         memcached_server_list_free(s);
+
+        if (ret == MEMCACHED_SUCCESS)
+        {
+            memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED, 1);
+            memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_BINARY_PROTOCOL, 1);
+            memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_NO_BLOCK, 1);
+            memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_TCP_NODELAY, 1);
+        }
+
         return ret == 0;
         
-    }
-
-    void initBehaviors() 
-    {
-        memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED, 1);
-        memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_BINARY_PROTOCOL, 1);
-        memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_NO_BLOCK, 1);
-        memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_TCP_NODELAY, 1);
-        memcached_behavior_set(mc, MEMCACHED_BEHAVIOR_SORT_HOSTS, 1);
     }
 
 private:
@@ -54,115 +56,178 @@ public:
 
     int control(unsigned int command, char *buf, int len, char **rbuf, int rlen) 
     {
-        switch(command) {
-            case CMD_SET_SERVERS:
-                return doSetServers(buf, len, rbuf, rlen);
-            default:
-                return 0;
+        switch(command) 
+        {
+        case CMD_SET_SERVERS:
+            return doSetServers(buf, len, rbuf, rlen);
         }
+        return 0;
     }
 
-    void output(char *buf, int len)
+    void output(IOVec& vec)
     {
-        int cmd = *buf;
-        uint32_t seq = ntohl(*(uint32_t*)(buf+1));
-        switch(cmd) {
-            case CMD_SET:
-                doSet(seq, buf+5, len-5);
+        char cmd;
+        uint32_t seq;
+
+        if (vec.get(cmd) && vec.get(seq))
+        {
+            switch(cmd) 
+            {
+            case CMD_GET:
+                doGet(seq, vec);
                 break;
             case CMD_MGET:
-                doMGet(seq, buf+5, len-5);
+                doMGet(seq, vec);
                 break;
+            case CMD_SET:
+                doSet('s', seq, vec);
+                break;
+            case CMD_DELETE:
+                doDelete(seq, vec);
+                break;
+            }
         }
     }
 
 private:
     
-    TermData createReply(uint32_t seq, char* atom)
+    // some TermData helpers
+    TermData createReply(uint32_t seq)
     {
         TermData td;
         td.open_tuple();
         td.add_atom("mc_async");
         td.add_uint(seq);
-
-        td.open_tuple();
-        td.add_atom(atom);
         return td;
     }
 
-    void sendError(uint32_t seq, memcached_return rc, bool to_caller)
+    TermData& ok(TermData& td, bool in_tuple = true)
     {
-        TermData td = createReply(seq, "error");
-        const char * errmsg = memcached_strerror(m_cache, rc); 
-        td.add_buf((char*)errmsg, strlen(errmsg));
-        td.output(m_port, to_caller);
+        if (in_tuple) td.open_tuple();
+        td.add_atom("ok");
+        return td;
     }
 
+    TermData& error(TermData& td, memcached_return rc)
+    {
+        const char * errmsg = memcached_strerror(m_cache, rc); 
+        td.open_tuple();
+        td.add_atom("error");
+        td.add_buf((char*)errmsg, strlen(errmsg));
+        td.close_tuple();
+        return td;
+    }
+
+    TermData& badarg(TermData& td)
+    {
+        td.open_tuple();
+        td.add_atom("error");
+        td.add_atom("badarg");
+        td.close_tuple();
+        return td;
+    }
+
+    void send(TermData& td)
+    {
+        td.output(m_port, driver_caller(m_port));
+    }
+
+    // command handlers
 
     int doSetServers(char* buf, int len, char** rbuf, int rlen)
     {
         m_cache.setServers(buf);
-        m_cache.initBehaviors();
         return 0;
     }
 
-    void doSet(uint32_t seq, char* buf, int len)
+    void doGet(uint32_t seq, IOVec& vec)
     {
-        // <<KeyLen:32, Key/binary, ValueLen:32, Value/binary, Flags:32, Expires:32>>
-        char *p = buf;
-        size_t klen = ntohl(*(int*)p); p+=4;
-        char *key = p; p += klen;
-        size_t vlen = ntohl(*(int*)p); p+=4;
-        char *value = p; p += vlen;
-        uint32_t flags = ntohl(*(int*)p); p+=4;
-        uint32_t expires = ntohl(*(int*)p);
+        TermData td = createReply(seq);
+
+        size_t klen;
+        char * key;
+
+        // <<KeyLen:32, Key/binary>>
+        if (!(vec.get(klen) && vec.get(key, klen)))
+        {
+            send(badarg(td));
+            return;
+        }
+
+        size_t vlen;
+        uint32_t flags;
 
         memcached_return rc;
-        rc = memcached_set(m_cache, (const char*)key, klen, value, vlen, expires, flags);
+        char* value = memcached_get(m_cache, (const char*)key, klen, &vlen, &flags, &rc);
         if (rc == MEMCACHED_SUCCESS)
         {
-            TermData td = createReply(seq, "ok");
-            td.output(m_port, true);
+            ok(td, true);
+
+            td.open_tuple();
+            td.add_buf(value, vlen);
+            td.add_uint(flags);
+            td.close_tuple();
+        }
+        else if (rc == MEMCACHED_NOTFOUND)
+        {
+            ok(td, true);
+            td.add_atom("undefined");
         }
         else
         {
-            sendError(seq, rc, true);
+            error(td, rc);
         }
+
+        send(td);
+        if (value) free(value);
+
     }
 
-    void doMGet(uint32_t seq, char* buf, int len)
+    void doMGet(uint32_t seq, IOVec& vec)
     {
+        TermData td = createReply(seq);
+
         // <<Count:32, KeyLen:32, Key/binary, ...>>
-        char *p = buf;
-        int num_keys = ntohl(*(int*)p); p += 4;
+        int num_keys;
+        if (!vec.get(num_keys) || num_keys <= 0 || num_keys>2000)
+            goto L_badarg;
+
         char * keys[num_keys];
         size_t lengths[num_keys];
 
         for(int i=0;i<num_keys;i++)
         {
-            lengths[i] = ntohl(*(int*)p); p+=4;
-            keys[i] = p; p += lengths[i];
+            if (!(vec.get(lengths[i]) && vec.get(keys[i], lengths[i])))
+                goto L_badarg;
         }
 
+        goto L_arg_ok;
+
+    L_badarg:
+        send(badarg(td));
+        return;
+
+    L_arg_ok:
         memcached_return rc;
         rc = memcached_mget(m_cache, (const char**)keys, lengths, num_keys);
 
         if (rc != MEMCACHED_SUCCESS)
         {
-            sendError(seq, rc, true);
+            send(error(td, rc));
             return;
         }
 
-        TermData td = createReply(seq, "ok");
+        ok(td, true);
+        td.open_list();
 
         vector<memcached_result_st*> free_list;
 
         // [ {Key, Value, Flag}, ... ]
-        td.open_list();
         memcached_result_st *result;
         while ( (result = memcached_fetch_result(m_cache, NULL, &rc)) ) 
         {
             free_list.push_back(result);
+
             td.open_tuple();
             td.add_buf(result->key, result->key_length);
             td.add_buf(memcached_string_value(&(result->value)), memcached_string_length(&(result->value)));
@@ -170,9 +235,61 @@ private:
             td.close_tuple();
         } 
         td.close_list();
-        td.output(m_port, true);
-
+        send(td);
         for(int i=0; i<free_list.size(); i++) memcached_result_free(free_list[i]);
+    }
+
+    void doSet(char type, uint32_t seq, IOVec& vec)
+    {
+        TermData td = createReply(seq);
+
+        // <<KeyLen:32, Key/binary, ValueLen:32, Value/binary, Flags:32, Expires:32>>
+        size_t klen, vlen;
+        uint32_t flags, expires;
+        char *key, *value;
+
+        if (!(vec.get(klen) &&
+              vec.get(vlen) &&
+              vec.get(flags) &&
+              vec.get(expires) &&
+              vec.get(key, klen) &&
+              vec.get(value, vlen)))
+        {
+            send(badarg(td));
+            return;
+        }
+
+        memcached_return rc;
+        rc = memcached_set(m_cache, (const char*)key, klen, value, vlen, expires, flags);
+        if (rc == MEMCACHED_SUCCESS)
+            send(ok(td, false));
+        else
+            send(error(td, rc));
+    }
+
+    void doDelete(uint32_t seq, IOVec& vec)
+    {
+        TermData td = createReply(seq);
+
+        // <<Expires:32, KeyLen:32, Key/binary>>
+        uint32_t expires;
+        size_t klen;
+        char *key;
+
+        if (!(vec.get(expires) &&
+              vec.get(klen) &&
+              vec.get(key, klen)))
+        {
+            send(badarg(td));
+            return;
+        }
+
+        memcached_return rc;
+        rc = memcached_delete(m_cache, (const char*)key, klen, expires);
+        if (rc == MEMCACHED_SUCCESS)
+            send(ok(td, false));
+        else
+            send(error(td, rc));
     }
 
 private:
@@ -202,15 +319,27 @@ static int driverControl(ErlDrvData drv_data, unsigned int command, char *buf, i
 
 static void driverOutput(ErlDrvData drv_data, char* buf, int len)
 {
-    ((Driver*)drv_data)->output(buf, len);
+    IOVec vec(buf, len);
+    ((Driver*)drv_data)->output(vec);
 }
 
+static void driverOutputv(ErlDrvData drv_data, ErlIOVec* ev)
+{
+    /*
+    printf("outputv=%p, sys_iov=%p, n=%d\r\n", ev, ev->iov, ev->vsize);
+    for(int i=0; i<ev->vsize; i++)
+        printf("  iov[%d]=(%p, %d)\r\n", i, ev->iov[i].iov_base, ev->iov[i].iov_len);
+    */
+
+    IOVec vec(ev->iov+1, ev->vsize-1); //TODO: the first iov seems to be (nil, 0)
+    ((Driver*)drv_data)->output(vec);
+}
 
 ErlDrvEntry driver_entry = {
    NULL,                    /* F_PTR init, N/A */
    driverStart,         /* L_PTR start, called when port is opened */
    driverStop,          /* F_PTR stop, called when port is closed */
-   driverOutput,        /* F_PTR output, called when erlang has sent */
+   NULL, //driverOutput,        /* F_PTR output, called when erlang has sent */
    NULL,                    /* F_PTR ready_input, called when input descriptor ready */
    NULL,                    /* F_PTR ready_output, called when output descriptor ready */
    "memcached_drv",         /* char *driver_name, the argument to open_port */
@@ -218,7 +347,7 @@ ErlDrvEntry driver_entry = {
    NULL,                    /* handle */
    driverControl,       /* F_PTR control, port_command callback */
    NULL,                    /* F_PTR timeout, reserved */
-   NULL,					/* F_PTR outputv, reserved */
+   driverOutputv,       /* F_PTR outputv, reserved */
    NULL,
    NULL,
    NULL,

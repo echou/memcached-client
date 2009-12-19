@@ -5,7 +5,7 @@
 -module(mcache2).
 -author('echou327@gmail.com').
 
--export([mget/2, set/5, set/4]).
+-export([get/2, mget/2, set/5, set/4]).
 
 -define(SEP, ":").
 -define(MGET_TIMEOUT, 500).
@@ -14,6 +14,11 @@
 -define(FMT_JSON, 102).
 -define(FMT_INT, 103).
 
+get(Class, Key) ->
+    {Pool, _Expiry} = mcache_expires:expire(Class),
+    {mc_async, 0, {ok, Value}} = memcached_drv:get(Pool, 0, {Class, Key}),
+    decode_value(Value).
+    
 mget(Class, [_|_]=Keys) ->
     {Pool, _Expiry} = mcache_expires:expire(Class),
     RealKeys = lists:map(fun(K) ->

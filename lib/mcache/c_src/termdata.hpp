@@ -4,7 +4,6 @@
 #include <erl_driver.h>
 #include <ei.h>
 
-#include <list>
 #include <vector>
 #include <stack>
 
@@ -13,45 +12,39 @@ using namespace std;
 class TermData 
 {
 public:
-
     typedef ErlDrvTermData Item;
 
     void add_atom(char* atom) 
     {
-        spec.push_back(ERL_DRV_ATOM);
-        spec.push_back(driver_mk_atom(atom));
-        if (!stk.empty()) stk.top().first++;
+        inc_counter();
+        add(ERL_DRV_ATOM, driver_mk_atom(atom));
     }
 
     void add_uint(uint32_t uint)
     {
-        spec.push_back(ERL_DRV_UINT);
-        spec.push_back((Item)uint);
-        if (!stk.empty()) stk.top().first++;
+        inc_counter();
+        add(ERL_DRV_UINT, (Item)uint);
     }
 
     void add_buf(char* buf, size_t size, bool copy=false) 
     {
-        if (not copy) {
-            spec.push_back(ERL_DRV_BUF2BINARY);
-            spec.push_back((Item)buf);
-            spec.push_back((Item)size);
+        inc_counter();
+
+        if (!copy) 
+        {
+            add(ERL_DRV_BUF2BINARY, (Item)buf, (Item)size);
         }
-        else {
+        else 
+        {
             ErlDrvBinary * bin = driver_alloc_binary(size);
             memcpy(bin->orig_bytes, buf, size);
-            spec.push_back(ERL_DRV_BINARY);
-            spec.push_back((Item)bin);
-            spec.push_back((Item)size);
-            spec.push_back((Item)0);
+            add(ERL_DRV_BINARY, (Item)bin, (Item)size, (Item)0);
         }
-
-        if (!stk.empty()) stk.top().first++;
     }
 
     void open_tuple()
     {
-        if (!stk.empty()) stk.top().first++;
+        inc_counter();
         stk.push(make_pair(0, 't'));
     }
 
@@ -59,14 +52,13 @@ public:
     {
         if (check && (stk.empty() || stk.top().second != 't'))
             return;
-        spec.push_back(ERL_DRV_TUPLE);
-        spec.push_back(stk.top().first);
+        add(ERL_DRV_TUPLE, (Item)stk.top().first);
         stk.pop();
     }
 
     void open_list()
     {
-        if (!stk.empty()) stk.top().first++;
+        inc_counter();
         stk.push(make_pair(0, 'l'));
     }
 
@@ -74,9 +66,7 @@ public:
     {
         if (check && (stk.empty() || stk.top().second != 'l'))
             return;
-        spec.push_back(ERL_DRV_NIL);
-        spec.push_back(ERL_DRV_LIST);
-        spec.push_back(stk.top().first+1);
+        add(ERL_DRV_NIL, ERL_DRV_LIST, stk.top().first+1);
         stk.pop();
     }
 
@@ -92,33 +82,19 @@ public:
             case 't':
                 close_tuple(false);
                 break;
+            default:
+                return;
             }
         }
     }
 
-    int output(ErlDrvPort port)
-    {
-        flush();
-        if (!spec.empty())
-            return driver_output_term(port, &(spec.begin()[0]), spec.size());
-        return 0;
-    }
-
-    int output(ErlDrvPort port, Item to)
-    {
-        flush();
-        if (!spec.empty())
-            return driver_send_term(port, to, &(spec.begin()[0]), spec.size());
-        return 0;
-    }
-
-    int output(ErlDrvPort port, bool to_caller)
+    int output(ErlDrvPort port, Item to=0)
     {
         flush();
         if (!spec.empty())
         {
-            if (to_caller)
-                return driver_send_term(port, driver_caller(port), &(spec.begin()[0]), spec.size());
+            if (to)
+                return driver_send_term(port, to, &(spec.begin()[0]), spec.size());
             else
                 return driver_output_term(port, &(spec.begin()[0]), spec.size());
         }
@@ -126,10 +102,98 @@ public:
     }
 
 private:
+    inline void inc_counter() { if (!stk.empty()) stk.top().first++; }
+    inline void add(Item a) { spec.push_back(a); }
+    inline void add(Item a, Item b) { spec.push_back(a); spec.push_back(b); }
+    inline void add(Item a, Item b, Item c) { spec.push_back(a); spec.push_back(b); spec.push_back(c); }
+    inline void add(Item a, Item b, Item c, Item d) { spec.push_back(a); spec.push_back(b); spec.push_back(c); spec.push_back(d); }
+private:
     vector<Item> spec;
     stack<pair<int, char> > stk;
 };
 
+class IOVec
+{
+public:
+    IOVec(SysIOVec* vec, size_t vlen): m_vec(vec), m_vlen(vlen), vidx(0) 
+    {
+        cptr = m_vec[vidx].iov_base;
+        walk(0); // skip the first (nil, 0) vectors
+    }
+
+    IOVec(char* buf, size_t len): m_vec(&m_default_vec), m_vlen(1), vidx(0) 
+    {
+        m_default_vec.iov_base = buf;
+        m_default_vec.iov_len = len;
+        cptr = buf;
+    }
+
+    bool get(char& c) 
+    {
+        char *p = walk(1);
+        if (p) c = *p;
+        return p!=NULL;
+    }
+
+    bool get(short& s) 
+    {
+        char *p = walk(2);
+        if (p) s = ntohs(*(short*)p);
+        return p != NULL;
+    }
+
+    bool get(int& i) 
+    {
+        char *p = walk(4);
+        if (p) i = ntohl(*(int*)p);
+        return p != NULL;
+    }
+
+    bool get(unsigned int& i) 
+    {
+        char *p = walk(4);
+        if (p) i = (unsigned int)ntohl(*(int*)p);
+        return p != NULL;
+    }
+
+    bool get(char*& buf, size_t count) // the buffer cannot cross IOVec border.
+    {
+        buf = walk(count);
+        return buf != NULL;
+    }
+
+private:
+    char* walk(size_t count) 
+    {
+        if (vidx == m_vlen) // reach the end of vectors.
+            return NULL;
+
+        char * ret = NULL;
+        size_t left = m_vec[vidx].iov_len - (cptr - m_vec[vidx].iov_base);
+        if (left == count) // walk to next vec
+        {
+            ret = cptr;
+            vidx++;
+            while (vidx < m_vlen && m_vec[vidx].iov_len == 0) vidx++;
+            if (vidx < m_vlen)
+                cptr = m_vec[vidx].iov_base;
+        } else if (left > count) { // stay at current vector
+            ret = cptr;
+            cptr += count;
+        }
+        return ret;
+    }
+
+private:
+    SysIOVec m_default_vec; // emulate one buffer (giving buf ptr and len)
+
+    SysIOVec* m_vec;
+    size_t m_vlen;
+
+
+    char * cptr; // current pointer in one vec.
+    size_t vidx; // vector index
+};
 
 #endif
 

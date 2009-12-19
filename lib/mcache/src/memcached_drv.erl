@@ -7,8 +7,10 @@
 % API
 -export([start_link/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3, terminate/2]).
+
 -export([set_servers/2]).
--export([mget/2, mget/3, set/5, set/6]).
+-export([get/3, mget/3, set/6, delete/4]).
+-export([ab_get/3, ab_mget/3, ab_set/6, ab_delete/4]).
 
 -record(state, {pool, servers}).
 
@@ -18,9 +20,12 @@
 -define(DRV_TAG, memcached_drv).
 
 -define(CMD_SET_SERVERS, 0).
--define(CMD_SET, 1).
+-define(CMD_GET, 1).
 -define(CMD_MGET, 2).
--define(CMD_MGET_BY_CLASS, 3).
+-define(CMD_SET, 3).
+-define(CMD_DELETE, 4).
+
+-define(RECV_TIMEOUT, 1000).
 
 start_link(PoolName, Servers) ->
     gen_server:start_link(?MODULE, [PoolName, Servers], []).
@@ -112,23 +117,30 @@ get_driver_port(Pool) ->
     [{_, Port} | _] = ets:lookup(?DRV_TABLE, {?DRV_TAG, Pool, PortIndex}),
     Port.
 
-% API 
+do_receive(Timeout) ->
+    receive 
+        {mc_async, _, _} = Msg -> Msg
+    after Timeout ->
+        {error, timeout}
+    end.
 
+            
 control(Pool, Cmd, Data) ->
     Port = get_driver_port(Pool),
     erlang:port_control(Port, Cmd, Data).
 
-send_command(Port, Command, Timeout) ->
-    port_command(Port, Command),
-    receive
-        Data ->
-            Data
-        after Timeout->
-            {error, timeout}
-    end.
-
-send_command(Port, Command) ->
-    send_command(Port, Command, 100).
+to_binary(B) when is_binary(B) ->
+    B;
+to_binary(L) when is_list(L) ->
+    iolist_to_binary(L);
+to_binary(A) when is_atom(A) ->
+    list_to_binary(atom_to_list(A));
+to_binary(N) when is_integer(N) ->
+    list_to_binary(integer_to_list(N));
+to_binary({Class,Key}) ->
+    C = to_binary(Class),
+    K = to_binary(Key),
+    <<C/binary, ":", K/binary>>.
 
 %%%%%%%
 
@@ -141,41 +153,50 @@ set_servers(Pool, Servers) ->
             false
     end.
 
-mget(Pool, Keys) -> mget(Pool, 0, Keys).
 
-mget(Pool, Seq, [_|_]=Keys) ->
+ab_get(Pool, Seq, Key) ->
+    Port = get_driver_port(Pool),
+    K = to_binary(Key),
+    KLen = byte_size(K),
+    erlang:port_command(Port, [<<?CMD_GET, Seq:32, KLen:32>>, K]).
+    
+get(Pool, Seq, Key) ->
+    ab_get(Pool, Seq, Key),
+    do_receive(?RECV_TIMEOUT).
+
+ab_mget(Pool, Seq, [_|_]=Keys) ->
     Port = get_driver_port(Pool),
     NumKeys = length(Keys),
     Data = lists:foldl(fun(K,A) -> 
-                        KLen = iolist_size(K),
-                        [K, <<KLen:32>>|A]
-                    end, [<<Seq:32, NumKeys:32>>], Keys),
-    Data1 = lists:reverse(Data),
-    send_command(Port, [?CMD_MGET|Data1]).
+                        K1 = to_binary(K),
+                        KLen = byte_size(K1),
+                        [K1, <<KLen:32>>|A]
+                    end, [<<?CMD_MGET, Seq:32, NumKeys:32>>], Keys),
+    erlang:port_command(Port, lists:reverse(Data)).
 
-class_to_iolist(Class) when is_atom(Class) ->
-    atom_to_list(Class);
-class_to_iolist(Class) when is_list(Class); is_binary(Class) ->
-    Class.
+mget(Pool, Seq, Keys) ->
+    ab_mget(Pool, Seq, Keys),
+    do_receive(?RECV_TIMEOUT).
 
-mget_by_class(Pool, Seq, Class, [_|_]=Keys) ->
+ab_set(Pool, Seq, Key, Value, Flags, Expires) ->
     Port = get_driver_port(Pool),
-    NumKeys = length(Keys),
-    Class1 = class_to_iolist(Class),
-    ClassLen = iolist_size(Class1),
-    Data = lists:foldl(fun(K,A) -> 
-                        KLen = iolist_size(K),
-                        [K, <<KLen:32>>|A]
-                    end, [<<Seq:32, NumKeys:32, ClassLen:32>>, Class1], Keys),
-    Data1 = lists:reverse(Data),
-    send_command(Port, [?CMD_MGET_BY_CLASS|Data1]).
-
-set(Pool, Key, Value, Flags, Expires) -> set(Pool, 0, Key, Value, Flags, Expires).
+    K = to_binary(Key),
+    V = to_binary(Value),
+    KLen = byte_size(K),
+    VLen = byte_size(V),
+    erlang:port_command(Port, [<<?CMD_SET, Seq:32, KLen:32, VLen:32, Flags:32, Expires:32>>, K, V]).
 
 set(Pool, Seq, Key, Value, Flags, Expires) ->
-    Port = get_driver_port(Pool),
-    KLen = iolist_size(Key),
-    VLen = iolist_size(Value),
-    send_command(Port, [?CMD_SET, <<Seq:32, KLen:32>>, Key, <<VLen:32>>, Value, <<Flags:32, Expires:32>>]).
+    ab_set(Pool, Seq, Key, Value, Flags, Expires),
+    do_receive(?RECV_TIMEOUT).
     
+ab_delete(Pool, Seq, Key, Expires) ->
+    Port = get_driver_port(Pool),
+    K = to_binary(Key),
+    KLen = byte_size(K),
+    erlang:port_command(Port, [<<?CMD_DELETE, Seq:32, Expires:32, KLen:32>>, K]).
+    
+delete(Pool, Seq, Key, Expires) ->
+    ab_delete(Pool, Seq, Key, Expires),
+    do_receive(?RECV_TIMEOUT).
 
