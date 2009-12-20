@@ -11,7 +11,7 @@
 
 get(Class, Key) ->
     {Pool, _Expiry} = mcache_expires:expire(Class),
-    {mc_async, 0, {ok, Value}} = memcached_drv:get(Pool, 0, {Class, Key}),
+    {mc_async, 0, {ok, Value}} = memcached_drv:get(Pool, 0, mcache_util:map_key(Class, Key)),
     mcache_util:decode_value(Value).
     
 mget(Class, [_|_]=Keys) ->
@@ -51,4 +51,5 @@ set(Class, Key, Value, Format, Expiry) ->
 delete(Class, Key, Expiry) ->
     {Pool, _} = mcache_expires:expire(Class),
 	Expiry1 = mcache_util:encode_expiry(Expiry, 0),
-    {mc_async, 0, ok} = memcached_drv:delete(Pool, 0, mcache_util:map_key(Class, Key), Expiry1).
+    {mc_async, 0, ok} = memcached_drv:delete(Pool, 0, mcache_util:map_key(Class, Key), Expiry1),
+    ok.
