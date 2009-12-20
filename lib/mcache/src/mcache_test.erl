@@ -18,9 +18,10 @@ test_get(P, R) ->
         end,
     stresstest:start("test_get", P, R, F).
 
-test_set(P, R) ->
+test_set(P, R, M, Size) ->
+    S = Size * 8,
     F = fun(I) ->
-            mcache:set(mcache.test, <<"key:", I:32>>, <<"value:", I:32, I:32, I:32, I:32>>, raw, default)
+            M:set(mcache.test, "key:" ++ integer_to_list(I), <<"value:", I:S>>, raw, 0)
         end,
     stresstest:start("test_set", P, R, F).
 
