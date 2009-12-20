@@ -5,6 +5,8 @@
 
 #include "termdata.hpp"
 
+#include <iostream>
+
 using namespace std;
 
 #define CMD_SET_SERVERS 0
@@ -13,6 +15,7 @@ using namespace std;
 #define CMD_MGET    2
 #define CMD_SET     3
 #define CMD_DELETE  4
+#define CMD_MGET2   5 
 
 class Cache 
 {
@@ -84,6 +87,9 @@ public:
                 break;
             case CMD_DELETE:
                 doDelete(seq, vec);
+                break;
+            case CMD_MGET2:
+                doMGet2(seq, vec);
                 break;
             }
         }
@@ -239,6 +245,89 @@ private:
         for(int i=0; i<free_list.size(); i++) memcached_result_free(free_list[i]);
     }
 
+    void doMGet2(uint32_t seq, IOVec& vec)
+    {
+        TermData td = createReply(seq);
+
+        // <<Count:32, KeyLen:32, Key/binary, ...>>
+        int num_keys;
+        if (!vec.get(num_keys) || num_keys <= 0 || num_keys>2000)
+            goto L_badarg;
+
+        char * keys[num_keys];
+        size_t lengths[num_keys];
+
+        for(int i=0;i<num_keys;i++)
+        {
+            char nul;
+            if (!(vec.get(lengths[i]) && vec.get(keys[i], lengths[i]+1))) // trailing zero is included
+                goto L_badarg;
+            //printf("key #%d = %s\r\n", i, keys[i]);
+        }
+
+        goto L_arg_ok;
+
+    L_badarg:
+        send(badarg(td));
+        return;
+
+    L_arg_ok:
+        memcached_return rc;
+        rc = memcached_mget(m_cache, (const char**)keys, lengths, num_keys);
+
+        if (rc != MEMCACHED_SUCCESS)
+        {
+            send(error(td, rc));
+            return;
+        }
+
+        vector<memcached_result_st*> results;
+
+        // [ {Key, Value, Flag}, ... ]
+        memcached_result_st *result;
+        while ( (result = memcached_fetch_result(m_cache, NULL, &rc)) ) 
+        {
+            results.push_back(result);
+            //std::cout << "result: " << std::string(result->key, result->key_length) << "\r\n";
+        }
+
+        ok(td, true);
+        td.open_list();
+
+        int ri = 0;
+        for(int i=0; i<num_keys; i++)
+        {
+            memcached_result_st* r = NULL;
+            for(int j=ri; j<results.size(); j++)
+            {
+                if (lengths[i] == results[j]->key_length &&
+                    memcmp(keys[i], results[j]->key, lengths[i]) == 0)
+                {
+                    r = results[j];
+                    //ri = j+1;
+                    break;
+                }
+            }
+            if (r)
+            {
+                td.open_tuple();
+                //td.add_buf(result->key, result->key_length);
+                td.add_buf(memcached_string_value(&(r->value)), memcached_string_length(&(r->value)));
+                td.add_uint(r->flags);
+                td.close_tuple();
+            }
+            else
+            {
+                td.add_atom("undefined");
+            }
+        }
+
+        td.close_list();
+        send(td);
+
+        for(int i=0; i<results.size(); i++) 
+            memcached_result_free(results[i]);
+    }
     void doSet(char type, uint32_t seq, IOVec& vec)
     {
         TermData td = createReply(seq);

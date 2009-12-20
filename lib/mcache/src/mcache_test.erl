@@ -32,6 +32,11 @@ test_mget(P, R, M) ->
         end,
     stresstest:start("test_mget", P, R, F).
 
+test_mget2(P, R, M) ->
+    F = fun(I) ->
+            M:mget(mcache.test, [<<"key:", V:32>> || V <- lists:seq(I, I + 20)])
+        end,
+    stresstest:start("test_mget", P, R, F).
 
 gen_continuum(Mode) ->
     Servers = [
