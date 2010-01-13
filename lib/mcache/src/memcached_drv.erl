@@ -9,8 +9,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3, terminate/2]).
 
 -export([set_servers/2]).
--export([get/3, mget/3, mget2/4, set/6, delete/4]).
--export([ab_get/3, ab_mget/3, ab_mget2/4, ab_set/6, ab_delete/4]).
+-export([get/3, mget/3, set/6, delete/4]).
+-export([ab_get/3, ab_mget/3, ab_set/6, ab_delete/4]).
 
 -record(state, {pool, servers}).
 
@@ -177,22 +177,6 @@ ab_mget(Pool, Seq, [_|_]=Keys) ->
 
 mget(Pool, Seq, Keys) ->
     ab_mget(Pool, Seq, Keys),
-    do_receive(?RECV_TIMEOUT).
-
-ab_mget2(Pool, Seq, Class, Keys) ->
-    Port = get_driver_port(Pool),
-    NumKeys = length(Keys),
-    Class1 = to_binary(Class),
-    CLen = byte_size(Class1),
-    Data = lists:foldl(fun(K, A) ->
-               K1 = to_binary(K),
-               KLen = byte_size(K1) + CLen + 1,
-               [<<KLen:32, Class1/binary, ":", K1/binary, 0>>|A]
-            end, [<<?CMD_MGET2, Seq:32, NumKeys:32>>], Keys),
-    erlang:port_command(Port, lists:reverse(Data)).
-
-mget2(Pool, Seq, Class, Keys) ->
-    ab_mget2(Pool, Seq, Class, Keys),
     do_receive(?RECV_TIMEOUT).
 
 ab_set(Pool, Seq, Key, Value, Flags, Expires) ->

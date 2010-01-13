@@ -1,7 +1,7 @@
 -module(mcache_client).
 -author('echou327@gmail.com').
 
-%-compile([inline, native, {hipe,o3}]).
+-compile([inline, bin_opt_info]).
 
 -behaviour(gen_server).
 
@@ -9,12 +9,15 @@
 -export([init/1,handle_call/3,handle_cast/2,handle_info/2,code_change/3,terminate/2]).
 -export([mc_get/2, ab_get/2, mc_mget/2, ab_mget/3, mc_set/5, ab_set/5, mc_delete/2, ab_delete/2]).
 
+
 -include_lib("kernel/src/inet_int.hrl").
 
 -define(PG2_GROUP_TAG, ?MODULE).
 -define(SOCK_OPTS, [binary, {active, true}, {delay_send, false}, {nodelay, true}, {packet, raw}]).
 -define(CONNECT_TIMEOUT, 2000).
 -define(RECONNECT_AFTER, 5000).
+
+-define(DICT, pdict).
 
 -record(state, {addr, seq=0, parser, pendings, sock=not_connected, connecting}).
 
@@ -38,7 +41,7 @@ init([{Host, Port}=Server]) ->
                 addr={Host, Port},
                 seq=0,
                 parser=mcache_binary_frame:initial_state(),
-                pendings=dict:new(),
+                pendings=?DICT:new(),
                 connecting={Sock, Ref}}}.
 
 % HANDLE_CALL
@@ -65,30 +68,12 @@ handle_call({mc_ab, Req}, From, State) ->
 handle_call(_Req, _From, State) ->
     {noreply, State}.
 
-send_wrapper({mget, Keys}=Req, From, #state{sock=Sock, seq=Seq, pendings=Pendings}=State) ->
-    case (catch send_req(Sock, Seq, Req)) of
-        true ->
-            P = #mget_pending{from=From, time=erlang:now(), num_keys=length(Keys), items=nil},
-            {ok, State#state{seq=Seq+1, pendings=dict:store(Seq,P,Pendings)}};
-        _ ->
-            {not_sent, State}
-    end;
-send_wrapper(Req, From, #state{sock=Sock, seq=Seq, pendings=Pendings}=State) ->
-    case (catch send_req(Sock, Seq, Req)) of
-        true ->
-            P = #pending{from=From, time=erlang:now()},
-            {ok, State#state{seq=Seq+1, pendings=dict:store(Seq,P,Pendings)}};
-        _ ->
-            {not_sent, State}
-    end.
-
 % HANDLE_CAST
 
 handle_cast({mc, _Req}, #state{sock=not_connected}=State) ->
     {noreply, State};
 
 handle_cast({mc_ab, {mget, From, Keys}}, State) ->
-    %error_logger:info_msg("handle_cast(mget, ~p, ~p)~n", [Pid, Keys]),
     {_, State1} = send_wrapper({mget, Keys}, From, State),
     {noreply, State1};
 
@@ -103,6 +88,8 @@ handle_cast({mc, Req}, #state{sock=Sock, seq=Seq}=State) ->
 handle_cast(_Req, State) ->
     {noreply, State}.
 
+
+    
 % HANDLE_INFO
 
 handle_info({inet_async, Sock, Ref, Status}, #state{connecting={Sock, Ref}}=State) ->
@@ -115,7 +102,8 @@ handle_info({inet_async, Sock, Ref, Status}, #state{connecting={Sock, Ref}}=Stat
     end;
 
 handle_info({tcp_closed, Sock}, #state{sock=Sock}=State) ->
-    {noreply, socket_close(State), hibernate};
+    catch gen_tcp:close(Sock),
+    {stop, tcp_closed, State};
 
 handle_info(reconnect, #state{addr={Host, Port}}=State) ->
     {ok, Sock, Ref} = async_connect(Host, Port, ?SOCK_OPTS, ?CONNECT_TIMEOUT),
@@ -131,6 +119,19 @@ handle_info({tcp, Sock, Data}, #state{sock=Sock,parser=Parser,pendings=Pendings}
             {noreply, State#state{parser=NewParser,pendings=NewPendings}}
     end;
 
+handle_info({tcp_old, Sock, Data}, #state{sock=Sock,pendings=Pendings}=State) ->
+    Resps = parse(Data),
+    %error_logger:info_msg("recv: ~p~n", [Resps]),
+    case Resps of
+        [] ->
+            {noreply, State};
+        [_|_] ->
+            NewPendings = lists:foldl(fun handle_one_resp/2, Pendings, Resps),
+            {noreply, State#state{pendings=NewPendings}}
+    end;
+    
+    
+
 handle_info(_Msg, State) ->
     %error_logger:info_msg("handle_info: ~p~n", [_Msg]),
     {noreply, State}.
@@ -143,10 +144,27 @@ code_change(_OldVsn, State, _Extra) ->
 terminate(_Reason, _State) ->
     ok.
 
+%%%% internal functions
+
+pending_create({mget, Keys}, From) ->
+    #mget_pending{from=From, time=erlang:now(), num_keys=length(Keys), items=nil};
+pending_create(_Req, From) ->
+    #pending{from=From, time=erlang:now()}.
+
+send_wrapper(Req, From, #state{sock=Sock, seq=Seq, pendings=Pendings}=State) ->
+    case (catch send_req(Sock, Seq, Req)) of
+        true ->
+            P = pending_create(Req, From), 
+            {ok, State#state{seq=Seq+1, pendings=?DICT:store(Seq,P,Pendings)}};
+        _Any ->
+            io:format("send_wrapper ~p~n", [_Any]),
+            {not_sent, State}
+    end.
+
 socket_close(#state{sock=not_connected, pendings=Pendings}=State) ->
     flush_pendings(Pendings, {error, closed}),
     erlang:send_after(?RECONNECT_AFTER, self(), reconnect),
-    State#state{connecting=undefined, pendings=dict:new(), parser=mcache_binary_frame:initial_state()};
+    State#state{connecting=undefined, pendings=?DICT:new(), parser=mcache_binary_frame:initial_state()};
 socket_close(#state{sock=Sock}=State) when is_port(Sock) ->
     catch gen_tcp:close(Sock),
     socket_close(State#state{sock=not_connected}).
@@ -156,13 +174,48 @@ prepend_list(Key, Value, nil) ->
 prepend_list(Key, Value, L) ->
     [{Key,Value}|L].
 
+parse(Bin) ->
+    L = 
+        case erlang:get(current_data) of
+            undefined ->
+                parse_resp(Bin, []);
+            Data ->
+                parse_resp(<<Data/binary, Bin/binary>>, [])
+        end,
+    lists:reverse(L).
+
+parse_resp(<<>>, L) ->
+    erlang:erase(current_data),
+    L;
+parse_resp(<<16#81, Opcode, KeyLen:16, ExtraLen, _DataType, Status:16, TotalBodyLen:32, Seq:32, CAS:64, Body:TotalBodyLen/binary, Rest/binary>>, L) ->
+    parse_resp(Rest, [build_resp(Opcode, Status, Seq, CAS, KeyLen, ExtraLen, Body)|L]);
+
+parse_resp(Bin, L) ->
+    case erlang:get(current_data) of
+        undefined ->
+            erlang:put(current_data, Bin),
+            L;
+        Data ->
+            parse_resp(<<Data/binary, Bin/binary>>, L)
+    end.
+
+build_resp(Opcode, Status, Seq, CAS, KeyLen, ExtraLen, Body) ->
+    <<Extra:ExtraLen/binary, Key:KeyLen/binary, Data/binary>> = Body,
+    #resp{opcode=Opcode,
+          status=Status,
+          seq=Seq,
+          cas=CAS,
+          key=Key,
+          extra=Extra,
+          body=Data}.
+
 % Handles mget sequences (getkq, getkq, ..., noop)
-handle_one_resp(#resp{opcode=getkq, seq=Seq}=Resp, Pendings) ->
-    case dict:find(Seq, Pendings) of
+handle_one_resp(#resp{opcode=?getkq, seq=Seq}=Resp, Pendings) ->
+    case ?DICT:find(Seq, Pendings) of
         {ok, #mget_pending{items=Items}=P} ->
             case decode_resp(Resp) of
                 {ok, {Key, Value}} ->
-                    dict:store(Seq, P#mget_pending{items=prepend_list(Key,Value,Items)}, Pendings);
+                    ?DICT:store(Seq, P#mget_pending{items=prepend_list(Key,Value,Items)}, Pendings);
                 _ ->
                     Pendings
             end;
@@ -170,18 +223,18 @@ handle_one_resp(#resp{opcode=getkq, seq=Seq}=Resp, Pendings) ->
             Pendings
     end;
 
-handle_one_resp(#resp{opcode=noop,seq=Seq}, Pendings) ->
-    case dict:find(Seq, Pendings) of
+handle_one_resp(#resp{opcode=?noop,seq=Seq}, Pendings) ->
+    case ?DICT:find(Seq, Pendings) of
         {ok, #mget_pending{from=From, num_keys=NumKeys, items=Items}} ->
             gen_server:reply(From, {mget, NumKeys, Items});
         _ ->
             ok
     end,
-    dict:erase(Seq, Pendings);
+    ?DICT:erase(Seq, Pendings);
 
 
 handle_one_resp(#resp{seq=Seq}=Resp, Pendings) ->
-    case dict:find(Seq, Pendings) of
+    case ?DICT:find(Seq, Pendings) of
         {ok, #pending{from=From}} ->
             Result = case (catch decode_resp(Resp)) of
                         {ok, Any} -> Any;
@@ -192,8 +245,9 @@ handle_one_resp(#resp{seq=Seq}=Resp, Pendings) ->
         _ ->
             ok
     end,
-    dict:erase(Seq, Pendings).
+    ?DICT:erase(Seq, Pendings).
 
+% TODO modification not done yet!
 flush_pendings(Pendings, Result) ->
     dict:map(
         fun(_Seq, #pending{from=From}) ->
@@ -240,63 +294,71 @@ do_send_req(Sock, Req) ->
     erlang:port_command(Sock, mcache_binary_frame:encode(Req)).
 
 send_req(Sock, Seq, {mget, Keys}) ->
-    Reqs = [ #req{opcode=getkq, seq=Seq, key=K} || K <- Keys ],
-    do_send_req(Sock, lists:reverse([#req{opcode=noop, seq=Seq}|Reqs]));
+    Reqs = [ #req{opcode=?getkq, seq=Seq, key=K} || K <- Keys ],
+    do_send_req(Sock, lists:reverse([#req{opcode=?noop, seq=Seq}|Reqs]));
 
 send_req(Sock, Seq, version) ->
-    do_send_req(Sock, #req{opcode=version, seq=Seq});
+    do_send_req(Sock, #req{opcode=?version, seq=Seq});
 
 send_req(Sock, Seq, {delete, Key}) ->
-    do_send_req(Sock, #req{opcode=delete, seq=Seq, key=Key});
+    do_send_req(Sock, #req{opcode=?delete, seq=Seq, key=Key});
 
 send_req(Sock, Seq, {flush, Expiry}) ->
-    do_send_req(Sock, #req{opcode=flush, seq=Seq, extra= <<Expiry:32>>});
+    do_send_req(Sock, #req{opcode=?flush, seq=Seq, extra= <<Expiry:32>>});
 send_req(Sock, Seq, flush) ->
-    do_send_req(Sock, #req{opcode=flush, seq=Seq});
+    do_send_req(Sock, #req{opcode=?flush, seq=Seq});
 
 send_req(Sock, Seq, {getk, Key}) ->
-    do_send_req(Sock, #req{opcode=getk, seq=Seq, key=Key});
+    do_send_req(Sock, #req{opcode=?getk, seq=Seq, key=Key});
 
-send_req(Sock, Seq, {Op, Key, Value, Flags, Expiry}) when Op=:=set;Op=:=add;Op=:=replace ->
-    do_send_req(Sock, #req{opcode=Op, seq=Seq, key=Key, body=Value, extra= <<Flags:32, Expiry:32>>});
+send_req(Sock, Seq, {set, Key, Value, Flags, Expiry}) ->
+    do_send_req(Sock, #req{opcode=?set, seq=Seq, key=Key, body=Value, extra= <<Flags:32, Expiry:32>>});
 
-send_req(Sock, Seq, {Op, Key, Delta, Initial, Expiry}) when Op=:=incr;Op=:=decr ->
-    do_send_req(Sock, #req{opcode=Op, seq=Seq, key=Key, extra= <<Delta:64, Initial:64, Expiry:32>>}).
+send_req(Sock, Seq, {add, Key, Value, Flags, Expiry}) ->
+    do_send_req(Sock, #req{opcode=?add, seq=Seq, key=Key, body=Value, extra= <<Flags:32, Expiry:32>>});
+
+send_req(Sock, Seq, {replace, Key, Value, Flags, Expiry}) ->
+    do_send_req(Sock, #req{opcode=?replace, seq=Seq, key=Key, body=Value, extra= <<Flags:32, Expiry:32>>});
+
+send_req(Sock, Seq, {incr, Key, Delta, Initial, Expiry}) ->
+    do_send_req(Sock, #req{opcode=?incr, seq=Seq, key=Key, extra= <<Delta:64, Initial:64, Expiry:32>>});
+
+send_req(Sock, Seq, {decr, Key, Delta, Initial, Expiry}) ->
+    do_send_req(Sock, #req{opcode=?decr, seq=Seq, key=Key, extra= <<Delta:64, Initial:64, Expiry:32>>}).
 
 
-
-decode_resp(#resp{opcode=noop}) ->
+decode_resp(#resp{opcode=?noop}) ->
     {ok, noop};
 
-decode_resp(#resp{opcode=getk, status=Status, extra=Extra, key=Key, body=Value}) ->
+decode_resp(#resp{opcode=?getk, status=Status, extra=Extra, key=Key, body=Value}) ->
     case Status of
-        ok ->
+        ?ok ->
             <<Flags:32>> = Extra,
             {ok, {Key, {Value, Flags}}};
         _ -> 
             {ok, {Key, undefined}}
     end;
 
-decode_resp(#resp{opcode=getkq, status=Status, extra=Extra, key=Key, body=Value}) ->
+decode_resp(#resp{opcode=?getkq, status=Status, extra=Extra, key=Key, body=Value}) ->
     case Status of
-        ok ->
+        ?ok ->
             <<Flags:32>> = Extra,
             {ok, {Key, {Value, Flags}}};
         _ -> 
             {ok, {Key, undefined}}
     end;
 
-decode_resp(#resp{opcode=incr, status=ok, body= <<Value:64>>}) ->
+decode_resp(#resp{opcode=?incr, status=?ok, body= <<Value:64>>}) ->
 	{ok, Value};
 
-decode_resp(#resp{opcode=decr, status=ok, body= <<Value:64>>}) ->
+decode_resp(#resp{opcode=?decr, status=?ok, body= <<Value:64>>}) ->
 	{ok, Value};
 
-decode_resp(#resp{opcode=version, status=ok, body=Body}) ->
+decode_resp(#resp{opcode=?version, status=?ok, body=Body}) ->
 	{ok, binary_to_list(Body)};
 
 decode_resp(#resp{opcode=_, status=Status}) ->
-	Status.
+	mcache_proto:status(Status).
 
 
 % ======================================================= 

@@ -10,11 +10,13 @@
 -define(HEADER_LEN, 24). % magic (0x81) + header (23 bytes)
 
 -record(frame, {data_len=?HEADER_LEN, data= <<>>, resp=nil}).
+-record(packet, {seq,opcode,status,key_len,extra_len,body}).
 
 % parse response packets
 
 initial_state() ->
     {header, #frame{data_len=?HEADER_LEN, data= <<>>, resp=nil}, []}.
+    
 
 parse({State, Frame, Acc}, <<>>) ->
     { {State, Frame, []}, lists:reverse(Acc)};
@@ -29,8 +31,8 @@ parse({State, Frame, Acc}, Data) ->
 
 parse_fsm(header, #frame{data_len=Len, data=Data}=Frame, Bin) when byte_size(Bin) >= Len ->
     <<16#81, Opcode, KeyLen:16, ExtraLen, DataType, Status:16, TotalBodyLen:32, Seq:32, CAS:64, Rest/binary>> = <<Data/binary, Bin/binary>>,
-    Resp = #resp{opcode=mcache_proto:opcode(Opcode),
-                 status=mcache_proto:status(Status), 
+    Resp = #resp{opcode=Opcode,
+                 status=Status,
                  key_len=KeyLen, extra_len=ExtraLen, 
                  body_len=TotalBodyLen-KeyLen-ExtraLen,
                  seq=Seq, data_type=DataType, cas=CAS},
@@ -54,5 +56,7 @@ encode(#req{opcode=Opcode, data_type=DataType, seq=Seq, cas=CAS, extra=Extra, ke
 	BodyLen = iolist_size(Body),
 	ExtraLen = iolist_size(Extra),
 	TotalBodyLen = KeyLen + BodyLen + ExtraLen,
-    OpcodeNum = mcache_proto:opcode(Opcode),
-    [ <<16#80, OpcodeNum:8, KeyLen:16, ExtraLen:8, DataType:8, 0:16, TotalBodyLen:32, Seq:32, CAS:64>>, Extra, Key, Body ].
+    %OpcodeNum = mcache_proto:opcode(Opcode),
+    [ <<16#80, Opcode:8, KeyLen:16, ExtraLen:8, DataType:8, 0:16, TotalBodyLen:32, Seq:32, CAS:64>>, Extra, Key, Body ].
+
+

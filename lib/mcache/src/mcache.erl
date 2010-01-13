@@ -12,6 +12,7 @@
 get(Class, Key) ->
     {Key1, Server, _DefaultExpiry} = get_server(Class, Key),
     {_, Value} = mcache_client:mc_get(Server, Key1),
+    %io:format("get ~p~n", [Value]),
 	mcache_util:decode_value(Value).
 
 mget(Class, [_|_]=Keys) ->
@@ -26,6 +27,7 @@ mget(Class, [_|_]=Keys) ->
                 mcache_client:ab_mget(Server, Ref, Ks) 
             end, ServerDict),
     Results = mget_receive(dict:size(KeyDict), Ref, ?MGET_TIMEOUT*1000, []),
+    %io:format("~p~n", [Results]),
     flat_foldl(
         fun({RealKey, Val}, LAcc) ->
             case dict:find(RealKey, KeyDict) of
@@ -35,6 +37,18 @@ mget(Class, [_|_]=Keys) ->
                     LAcc
             end
         end, [], Results).
+
+mget2(Class, [_|_]=Keys) ->
+    ServerDict = lists:foldl(
+                    fun(K, SAcc) ->
+                        {K1, Server, _DefaultExpiry} = get_server(Class, K),
+                        dict:append(Server, K1, SAcc)
+                    end, dict:new(), Keys),
+    Ref = erlang:make_ref(),
+    dict:map(fun(Server, Ks) -> 
+                mcache_client:ab_mget(Server, Ref, Ks) 
+            end, ServerDict),
+    Results = mget_receive(length(Keys), Ref, ?MGET_TIMEOUT*1000, []).
 
 set(Class, Key, Value, Format, Expiry) ->
 	{Key1, Server, DefaultExpiry} = get_server(Class, Key),

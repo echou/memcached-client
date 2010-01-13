@@ -6,6 +6,8 @@
 
 -export([start_link/0, start_child/3, restart_child/2, terminate_child/2]).
 
+-define(mcache_client, mcache_client3).
+
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
@@ -18,7 +20,7 @@ start_child(Name, {Host, Port}, Num) ->
     lists:foreach(
         fun(I) ->
             Id = {mcache_client, {Name, Host, Port}, I},
-			Spec = {Id,{mcache_client,start_link,[{Host,Port}]},permanent,2000,worker,[mcache_client]},
+			Spec = {Id,{?mcache_client,start_link,[{Host,Port}]},permanent,2000,worker,[?mcache_client]},
             case supervisor:start_child(?MODULE, Spec) of
 				{ok, _} -> ok;
 				{ok, _, _} -> ok;

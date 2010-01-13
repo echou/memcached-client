@@ -177,7 +177,9 @@ decode_value({Data, ?FMT_NATIVE}) ->
 decode_value({Data, ?FMT_JSON}) ->
 	eep0018:decode(Data);
 decode_value({<<Int:32>>, ?FMT_INT}) ->
-	Int.
+	Int;
+decode_value(Any) ->
+    erlang:error({unknown_value, Any}).
 
 encode_expiry(default, DefaultExpiry) ->
     encode_expiry1(DefaultExpiry);

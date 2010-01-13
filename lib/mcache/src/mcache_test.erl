@@ -12,9 +12,9 @@ test_get_server(P, R) ->
         end,
     stresstest:start("test_get", P, R, F).
 
-test_get(P, R) ->
+test_get(P, R, M) ->
     F = fun(I) ->
-            mcache:get(mcache.test, <<"key:", I:32>>)
+            M:get(mcache.test, "key:" ++ integer_to_list(I))
         end,
     stresstest:start("test_get", P, R, F).
 
@@ -28,13 +28,13 @@ test_set(P, R, M, Size) ->
 
 test_mget(P, R, M) ->
     F = fun(I) ->
-            M:mget(mcache.test, [<<"key:", V:32>> || V <- lists:seq(I, I + 20)])
+            M:mget(mcache.test, ["key:"++integer_to_list(V) || V <- lists:seq(I, I + 20)])
         end,
     stresstest:start("test_mget", P, R, F).
 
 test_mget2(P, R, M) ->
     F = fun(I) ->
-            M:mget(mcache.test, [<<"key:", V:32>> || V <- lists:seq(I, I + 20)])
+            M:mget(mcache.test, ["key:"++integer_to_list(V) || V <- lists:seq(I, I + 20)])
         end,
     stresstest:start("test_mget", P, R, F).
 

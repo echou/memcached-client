@@ -14,6 +14,11 @@ class TermData
 public:
     typedef ErlDrvTermData Item;
 
+    TermData(bool tuple=false)
+    {
+        if (tuple) open_tuple();
+    }
+
     void add_atom(char* atom) 
     {
         inc_counter();
@@ -24,6 +29,12 @@ public:
     {
         inc_counter();
         add(ERL_DRV_UINT, (Item)uint);
+    }
+
+    void add_port(ErlDrvPort port)
+    {
+        inc_counter();
+        add(ERL_DRV_PORT, driver_mk_port(port));
     }
 
     void add_buf(char* buf, size_t size, bool copy=false) 
