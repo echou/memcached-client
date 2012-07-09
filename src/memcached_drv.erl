@@ -24,6 +24,8 @@
 -define(CMD_SET, 3).
 -define(CMD_DELETE, 4).
 -define(CMD_MGET2, 5).
+-define(CMD_SET_NOREPLY,13).
+-define(CMD_DELETE_NOREPLY,14).
 
 -define(RECV_TIMEOUT, 1000).
 
@@ -49,7 +51,7 @@ init([PoolName, Options]=_Args) ->
     end,
     IsBinary = proplists:get_value(binary, Options, true),
     Servers = proplists:get_value(servers, Options, []),
-    io:format("~p:init(~p) ~p, ~s~n", [?MODULE, _Args, bool(IsBinary), Servers]),
+    %io:format("~p:init(~p) ~p, ~s~n", [?MODULE, _Args, bool(IsBinary), Servers]),
     catch ets:new(?DRV_TABLE, [set, public, named_table]),
     lists:foreach(fun(I) ->
                     Port = open_port({spawn_driver, ?DRV_NAME}, []), 
@@ -203,11 +205,11 @@ set(Pool, Seq, Op, Key, Value, Flags, Expires) ->
             replace -> $r;
             _ -> $s
         end,
-    erlang:port_command(Port, [<<?CMD_SET, Seq:32, Op1:8, KLen:32, VLen:32, Flags:32, Expires:32>>, K, V]).
+    erlang:port_command(Port, [<<?CMD_SET_NOREPLY, Seq:32, Op1:8, KLen:32, VLen:32, Flags:32, Expires:32>>, K, V]).
 
 delete(Pool, Seq, Key) ->
     Port = get_driver_port(Pool),
     K = to_binary(Key),
     KLen = byte_size(K),
-    erlang:port_command(Port, [<<?CMD_DELETE, Seq:32, KLen:32>>, K]).
+    erlang:port_command(Port, [<<?CMD_DELETE_NOREPLY, Seq:32, KLen:32>>, K]).
 

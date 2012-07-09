@@ -17,7 +17,7 @@ init([]) ->
                         Name = proplists:get_value(name, Pool, generic),
                         IsBinary = proplists:get_value(binary, Pool, true),
                         Servers = proplists:get_value(servers, Pool, []),
-                        S1 = string:join([Addr ++ ":" ++ integer_to_list(Weight)||{Addr, Weight}<-Servers], ","),
+                        S1 = string:join(["--server=" ++ Addr++"/?"++integer_to_list(Weight)||{Addr, Weight}<-Servers], " "),
                         Options = [{binary, IsBinary}, {servers, S1}],
                         {{memcached_drv, Name}, 
                          {memcached_drv, start_link, [Name, Options]}, 
