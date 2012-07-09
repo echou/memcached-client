@@ -4,3 +4,5 @@ priv
 lib/*/obj
 lib/*/ebin
 lib/*/priv
+
+c_src/memcached_drv.o
