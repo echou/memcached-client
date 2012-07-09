@@ -36,10 +36,6 @@ start(Label, Concurrency, RequestsPerProc, MFA) ->
 		end
 	).
 
-min(A, B) when A<B -> A;
-min(_A, B) -> B.
-max(A, B) when A<B -> B;
-max(A, _B) -> A.
 
 %% Report results
 report_loop(#results{label=Label, pleft=0, reqs=0} = _Results) ->
@@ -47,8 +43,8 @@ report_loop(#results{label=Label, pleft=0, reqs=0} = _Results) ->
 	
 report_loop(#results{label=Label, pleft=0, con=Procs, rpp=Rpp, reqs=Reqs, fail=Fail, ok=Ok} = Results) ->
 	{Sum, Min, Max} = lists:foldl(fun(Num, {S, Mi, Ma}) ->
-								Mi1 = min(Num, Mi),
-								Ma1 = max(Num, Ma),
+								Mi1 = erlang:min(Num, Mi),
+								Ma1 = erlang:max(Num, Ma),
 								S1 = S + Num,
 								{S1, Mi1, Ma1}
 							end, {0.0, 99999999999999.99999, 0.0}, Results#results.times),

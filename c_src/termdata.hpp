@@ -37,7 +37,7 @@ public:
         add(ERL_DRV_PORT, driver_mk_port(port));
     }
 
-    void add_buf(char* buf, size_t size, bool copy=false) 
+    void add_buf(const char* buf, size_t size, bool copy=false) 
     {
         inc_counter();
 
@@ -146,6 +146,7 @@ public:
         return p!=NULL;
     }
 
+    // 16 bit
     bool get(short& s) 
     {
         char *p = walk(2);
@@ -153,6 +154,7 @@ public:
         return p != NULL;
     }
 
+    // 32 bit
     bool get(int& i) 
     {
         char *p = walk(4);
@@ -160,12 +162,24 @@ public:
         return p != NULL;
     }
 
+    // 32 bit
     bool get(unsigned int& i) 
     {
         char *p = walk(4);
         if (p) i = (unsigned int)ntohl(*(int*)p);
         return p != NULL;
     }
+
+
+#if __LP64__
+    // size_t is 64bit on 64bit machines
+    bool get(size_t& i)
+    {
+        char *p = walk(4);
+        if (p) i = (size_t)ntohl(*(int*)p);
+        return p != NULL;
+    }
+#endif
 
     bool get(char*& buf, size_t count) // the buffer cannot cross IOVec border.
     {

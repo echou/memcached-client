@@ -1,0 +1,25 @@
+% vim:syn=erlang
+{application, mcache,
+    [   {description, "memcached client application"},
+        {vsn, "0.2.0"},
+        {modules, [ mcache_app, mcache, mcache_memcached_drv_sup, memcached_drv, mcache_config, mcache_util ]},
+        {registered, []},
+        {mod, {mcache_app, []}},
+        {applications, [kernel,stdlib]},
+        {env, 
+            [   {pools, [   [{name, generic},
+                             {connection_count, 10},
+                             {servers, [{"127.0.0.1:11211",256}]}
+                            ]
+                        ]
+                },
+                {expires,
+                    [   {example.foo, {generic, 300}},
+                        {example.bar, {generic, {10, hours}}}
+                    ]
+                }
+            ]
+        }
+    ]
+}.
+

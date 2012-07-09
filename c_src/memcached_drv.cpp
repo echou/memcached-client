@@ -27,9 +27,12 @@ public:
 
     bool setServers(const string& servers)
     {
+
         memcached_server_st* s = memcached_servers_parse(servers.c_str());
+        printf("servers %s, %p\r\n", servers.c_str(), s);
         if (!s)  return false;
 
+        memcached_servers_reset(mc);
         int ret = memcached_server_push(mc, s);
         memcached_server_list_free(s);
 
@@ -57,7 +60,7 @@ public:
         set_port_control_flags(port, PORT_CONTROL_FLAG_BINARY);
     }
 
-    int control(unsigned int command, char *buf, int len, char **rbuf, int rlen) 
+    ErlDrvSSizeT control(unsigned int command, char *buf, int len, char **rbuf, int rlen) 
     {
         switch(command) 
         {
@@ -102,7 +105,7 @@ private:
     {
         TermData td;
         td.open_tuple();
-        td.add_atom("mc_async");
+        td.add_atom((char*)"mc_async");
         td.add_uint(seq);
         return td;
     }
@@ -110,7 +113,7 @@ private:
     TermData& ok(TermData& td, bool in_tuple = true)
     {
         if (in_tuple) td.open_tuple();
-        td.add_atom("ok");
+        td.add_atom((char*)"ok");
         return td;
     }
 
@@ -118,7 +121,7 @@ private:
     {
         const char * errmsg = memcached_strerror(m_cache, rc); 
         td.open_tuple();
-        td.add_atom("error");
+        td.add_atom((char*)"error");
         td.add_buf((char*)errmsg, strlen(errmsg));
         td.close_tuple();
         return td;
@@ -127,8 +130,8 @@ private:
     TermData& badarg(TermData& td)
     {
         td.open_tuple();
-        td.add_atom("error");
-        td.add_atom("badarg");
+        td.add_atom((char*)"error");
+        td.add_atom((char*)"badarg");
         td.close_tuple();
         return td;
     }
@@ -140,7 +143,7 @@ private:
 
     // command handlers
 
-    int doSetServers(char* buf, int len, char** rbuf, int rlen)
+    ErlDrvSSizeT doSetServers(char* buf, int len, char** rbuf, int rlen)
     {
         m_cache.setServers(buf);
         return 0;
@@ -177,7 +180,7 @@ private:
         else if (rc == MEMCACHED_NOTFOUND)
         {
             ok(td, true);
-            td.add_atom("undefined");
+            td.add_atom((char*)"undefined");
         }
         else
         {
@@ -235,14 +238,14 @@ private:
             free_list.push_back(result);
 
             td.open_tuple();
-            td.add_buf(result->key, result->key_length);
-            td.add_buf(memcached_string_value(&(result->value)), memcached_string_length(&(result->value)));
-            td.add_uint(result->flags);
+            td.add_buf(result->item_key, result->key_length);
+            td.add_buf(result->value.string, result->value.current_size);
+            td.add_uint(result->item_flags);
             td.close_tuple();
         } 
         td.close_list();
         send(td);
-        for(int i=0; i<free_list.size(); i++) memcached_result_free(free_list[i]);
+        for(size_t i=0; i<free_list.size(); i++) memcached_result_free(free_list[i]);
     }
 
     void doMGet2(uint32_t seq, IOVec& vec)
@@ -259,7 +262,6 @@ private:
 
         for(int i=0;i<num_keys;i++)
         {
-            char nul;
             if (!(vec.get(lengths[i]) && vec.get(keys[i], lengths[i]+1))) // trailing zero is included
                 goto L_badarg;
             //printf("key #%d = %s\r\n", i, keys[i]);
@@ -298,10 +300,10 @@ private:
         for(int i=0; i<num_keys; i++)
         {
             memcached_result_st* r = NULL;
-            for(int j=ri; j<results.size(); j++)
+            for(size_t j=ri; j<results.size(); j++)
             {
                 if (lengths[i] == results[j]->key_length &&
-                    memcmp(keys[i], results[j]->key, lengths[i]) == 0)
+                    memcmp(keys[i], results[j]->item_key, lengths[i]) == 0)
                 {
                     r = results[j];
                     //ri = j+1;
@@ -312,20 +314,20 @@ private:
             {
                 td.open_tuple();
                 //td.add_buf(result->key, result->key_length);
-                td.add_buf(memcached_string_value(&(r->value)), memcached_string_length(&(r->value)));
-                td.add_uint(r->flags);
+                td.add_buf(r->value.string, r->value.current_size);
+                td.add_uint(r->item_flags);
                 td.close_tuple();
             }
             else
             {
-                td.add_atom("undefined");
+                td.add_atom((char*)"undefined");
             }
         }
 
         td.close_list();
         send(td);
 
-        for(int i=0; i<results.size(); i++) 
+        for(size_t i=0; i<results.size(); i++) 
             memcached_result_free(results[i]);
     }
     void doSet(char type, uint32_t seq, IOVec& vec)
@@ -401,16 +403,18 @@ static void driverStop(ErlDrvData handle)
     delete (Driver*)handle;
 }
 
-static int driverControl(ErlDrvData drv_data, unsigned int command, char *buf, int len, char **rbuf, int rlen) 
+static ErlDrvSSizeT driverControl(ErlDrvData drv_data, unsigned int command, char *buf, ErlDrvSizeT len, char **rbuf, ErlDrvSizeT rlen) 
 {
     return ((Driver*)drv_data)->control(command, buf, len, rbuf, rlen);
 }
 
+#if 0
 static void driverOutput(ErlDrvData drv_data, char* buf, int len)
 {
     IOVec vec(buf, len);
     ((Driver*)drv_data)->output(vec);
 }
+#endif
 
 static void driverOutputv(ErlDrvData drv_data, ErlIOVec* ev)
 {
@@ -424,6 +428,7 @@ static void driverOutputv(ErlDrvData drv_data, ErlIOVec* ev)
     ((Driver*)drv_data)->output(vec);
 }
 
+
 ErlDrvEntry driver_entry = {
    NULL,                    /* F_PTR init, N/A */
    driverStart,         /* L_PTR start, called when port is opened */
@@ -431,7 +436,7 @@ ErlDrvEntry driver_entry = {
    NULL, //driverOutput,        /* F_PTR output, called when erlang has sent */
    NULL,                    /* F_PTR ready_input, called when input descriptor ready */
    NULL,                    /* F_PTR ready_output, called when output descriptor ready */
-   "memcached_drv",         /* char *driver_name, the argument to open_port */
+   (char*)"memcached_drv",         /* char *driver_name, the argument to open_port */
    NULL,                    /* F_PTR finish, called when unloaded */
    NULL,                    /* handle */
    driverControl,       /* F_PTR control, port_command callback */
@@ -443,7 +448,7 @@ ErlDrvEntry driver_entry = {
    NULL,
    ERL_DRV_EXTENDED_MARKER,
    ERL_DRV_EXTENDED_MAJOR_VERSION,
-   ERL_DRV_EXTENDED_MAJOR_VERSION,
+   ERL_DRV_EXTENDED_MINOR_VERSION,
    ERL_DRV_FLAG_USE_PORT_LOCKING
 };
 

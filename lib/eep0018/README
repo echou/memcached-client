@@ -1,9 +1,0 @@
-Based on http://github.com/davisp/eep0018
-
-Improvements:
-1. UTF-8 strings are encoded into \uXXXX notations. (see c_src/yajl_encode.c)
-2. The following formats are encoded into maps: (see c_src/encode_json.c)
-   * {struct, [{K,V},...]}
-   * [{K,V}, ...]
-   * {[{K,V}, ...]}
-3. eep0018 is a linked-in driver following Driver Efficiency Guide.
