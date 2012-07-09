@@ -183,7 +183,7 @@ ab_mget(Pool, Seq, [_|_]=Keys) ->
                         K1 = to_binary(K),
                         KLen = byte_size(K1),
                         <<A/binary, KLen:32, K1/binary>>
-                    end, <<?CMD_MGET, Seq:32, NumKeys:32>>, Keys),
+                    end, <<?CMD_MGET2, Seq:32, NumKeys:32>>, Keys),
     erlang:port_command(Port, Data).
 
 mget(Pool, Seq, Keys, Timeout) ->

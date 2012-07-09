@@ -28,17 +28,21 @@ application:start(mcache).
     
 fetches \<Prefix>:\<Key> from memcached. 
 
+* Prefix and Key can be atom, string, binary, list or tuple. tuple/list items are separated by ":".
+* returns `undefined` if not found. 
+* unbox to correct format according to the type it was set. (see `mcache:set`)
 
 **set**
 
     mcache:set(Prefix, Key, Value, Type, Timeout)
     
+* Prefix and Key can be atom, list, binary, iolist or integer.
 * Value: depends on `Type`, can be binary, iolist, int or erlang term.
 * Type: can be one of `raw` (binary), `native` (erlang term, saved in `term_to_binary` format), `int` (an integer).
 * Timeout: can be one of `default` (default expiration: 300 seconds), `infinity`, `{X, seconds}`, `{X, minutes}`, `{X, hours}`, `{X, days}`, or an integer (as is).
 
 *Note 1*: no reply is returned for best performance.   
-*Note 2*: `Type` is encoded as memcached protocol field `flags`: 0 - `raw`, 1 - `native`, 100 - `int`.
+*Note 2*: `Type` is encoded as memcached protocol field `flags`: 0 - `raw`, 100 - `native`, 103 - `int`.
 
 
 **delete**

@@ -239,7 +239,7 @@ private:
 
             td.open_tuple();
             td.add_buf(result->item_key, result->key_length);
-            td.add_buf(result->value.string, result->value.current_size);
+            td.add_buf(result->value.string, result->value.end - result->value.string);
             td.add_uint(result->item_flags);
             td.close_tuple();
         } 
@@ -253,16 +253,16 @@ private:
         TermData td = createReply(seq);
 
         // <<Count:32, KeyLen:32, Key/binary, ...>>
-        int num_keys;
-        if (!vec.get(num_keys) || num_keys <= 0 || num_keys>2000)
+        size_t num_keys;
+        if (!vec.get(num_keys) || num_keys == 0 || num_keys>2000)
             goto L_badarg;
 
         char * keys[num_keys];
         size_t lengths[num_keys];
 
-        for(int i=0;i<num_keys;i++)
+        for(size_t i=0;i<num_keys;i++)
         {
-            if (!(vec.get(lengths[i]) && vec.get(keys[i], lengths[i]+1))) // trailing zero is included
+            if (!(vec.get(lengths[i]) && vec.get(keys[i], lengths[i])))
                 goto L_badarg;
             //printf("key #%d = %s\r\n", i, keys[i]);
         }
@@ -297,7 +297,7 @@ private:
         td.open_list();
 
         int ri = 0;
-        for(int i=0; i<num_keys; i++)
+        for(size_t i=0; i<num_keys; i++)
         {
             memcached_result_st* r = NULL;
             for(size_t j=ri; j<results.size(); j++)
@@ -314,7 +314,7 @@ private:
             {
                 td.open_tuple();
                 //td.add_buf(result->key, result->key_length);
-                td.add_buf(r->value.string, r->value.current_size);
+                td.add_buf(r->value.string, r->value.end-r->value.string);
                 td.add_uint(r->item_flags);
                 td.close_tuple();
             }

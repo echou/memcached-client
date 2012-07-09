@@ -29,12 +29,11 @@ get_raw(Class, Key) ->
     
 mget(Class, [_|_]=Keys) ->
     {Pool, _Expiry} = mcache_expires:expire(Class),
-    RealKeys = lists:foldl(fun(K, Acc) ->
-                            K1 = mcache_util:map_key(Class, K),
-                            [K1|Acc]
-                        end, [], Keys),
+    RealKeys = lists:map(fun(K) ->
+                            mcache_util:map_key(Class, K)
+                        end, Keys),
 
-    {mc_async, 0, {ok, Values}} = memcached_drv:mget(Pool, 0, lists:reverse(RealKeys)),
+    {mc_async, 0, {ok, Values}} = memcached_drv:mget(Pool, 0, RealKeys),
     mget_zip(Keys, Values, []).
 
 set(Class, Key, Value, Format, Expiry) ->
