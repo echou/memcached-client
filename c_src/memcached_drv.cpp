@@ -200,52 +200,55 @@ private:
         int num_keys;
         if (!vec.get(num_keys) || num_keys <= 0 || num_keys>2000)
             goto L_badarg;
-
-        char * keys[num_keys];
-        size_t lengths[num_keys];
-
-        for(int i=0;i<num_keys;i++)
+	    
         {
-            if (!(vec.get(lengths[i]) && vec.get(keys[i], lengths[i])))
-                goto L_badarg;
-        }
+            char * keys[num_keys];
+            size_t lengths[num_keys];
 
-        goto L_arg_ok;
+            for(int i=0;i<num_keys;i++)
+            {
+                if (!(vec.get(lengths[i]) && vec.get(keys[i], lengths[i])))
+                    goto L_badarg;
+            }
 
+            goto L_arg_ok;
+
+        L_arg_ok:
+            memcached_return rc;
+            rc = memcached_mget(m_cache, (const char**)keys, lengths, num_keys);
+
+            if (rc != MEMCACHED_SUCCESS)
+            {
+                send(error(td, rc));
+                return;
+            }
+
+            ok(td, true);
+            td.open_list();
+
+            vector<memcached_result_st*> free_list;
+
+            // [ {Key, Value, Flag}, ... ]
+            memcached_result_st *result;
+            while ( (result = memcached_fetch_result(m_cache, NULL, &rc)) ) 
+            {
+                free_list.push_back(result);
+
+                td.open_tuple();
+                td.add_buf(result->item_key, result->key_length);
+                td.add_buf(result->value.string, result->value.end - result->value.string);
+                td.add_uint(result->item_flags);
+                td.close_tuple();
+            } 
+
+            td.close_list();
+            send(td);
+            for(size_t i=0; i<free_list.size(); i++) memcached_result_free(free_list[i]);
+            return;
+	    }
     L_badarg:
         send(badarg(td));
         return;
-
-    L_arg_ok:
-        memcached_return rc;
-        rc = memcached_mget(m_cache, (const char**)keys, lengths, num_keys);
-
-        if (rc != MEMCACHED_SUCCESS)
-        {
-            send(error(td, rc));
-            return;
-        }
-
-        ok(td, true);
-        td.open_list();
-
-        vector<memcached_result_st*> free_list;
-
-        // [ {Key, Value, Flag}, ... ]
-        memcached_result_st *result;
-        while ( (result = memcached_fetch_result(m_cache, NULL, &rc)) ) 
-        {
-            free_list.push_back(result);
-
-            td.open_tuple();
-            td.add_buf(result->item_key, result->key_length);
-            td.add_buf(result->value.string, result->value.end - result->value.string);
-            td.add_uint(result->item_flags);
-            td.close_tuple();
-        } 
-        td.close_list();
-        send(td);
-        for(size_t i=0; i<free_list.size(); i++) memcached_result_free(free_list[i]);
     }
 
     void doMGet2(uint32_t seq, IOVec& vec)
@@ -257,78 +260,80 @@ private:
         if (!vec.get(num_keys) || num_keys == 0 || num_keys>2000)
             goto L_badarg;
 
-        char * keys[num_keys];
-        size_t lengths[num_keys];
-
-        for(size_t i=0;i<num_keys;i++)
         {
-            if (!(vec.get(lengths[i]) && vec.get(keys[i], lengths[i])))
-                goto L_badarg;
-            //printf("key #%d = %s\r\n", i, keys[i]);
+            char * keys[num_keys];
+            size_t lengths[num_keys];
+
+            for(size_t i=0;i<num_keys;i++)
+            {
+                if (!(vec.get(lengths[i]) && vec.get(keys[i], lengths[i])))
+                    goto L_badarg;
+                //printf("key #%d = %s\r\n", i, keys[i]);
+            }
+
+            goto L_arg_ok;
+
+        L_arg_ok:
+            memcached_return rc;
+            rc = memcached_mget(m_cache, (const char**)keys, lengths, num_keys);
+
+            if (rc != MEMCACHED_SUCCESS)
+            {
+                send(error(td, rc));
+                return;
+            }
+
+            vector<memcached_result_st*> results;
+
+            // [ {Key, Value, Flag}, ... ]
+            memcached_result_st *result;
+            while ( (result = memcached_fetch_result(m_cache, NULL, &rc)) ) 
+            {
+                results.push_back(result);
+                //std::cout << "result: " << std::string(result->key, result->key_length) << "\r\n";
+            }
+
+            ok(td, true);
+            td.open_list();
+
+            int ri = 0;
+            for(size_t i=0; i<num_keys; i++)
+            {
+                memcached_result_st* r = NULL;
+                for(size_t j=ri; j<results.size(); j++)
+                {
+                    if (lengths[i] == results[j]->key_length &&
+                        memcmp(keys[i], results[j]->item_key, lengths[i]) == 0)
+                    {
+                        r = results[j];
+                        //ri = j+1;
+                        break;
+                    }
+                }
+                if (r)
+                {
+                    td.open_tuple();
+                    //td.add_buf(result->key, result->key_length);
+                    td.add_buf(r->value.string, r->value.end-r->value.string);
+                    td.add_uint(r->item_flags);
+                    td.close_tuple();
+                }
+                else
+                {
+                    td.add_atom((char*)"undefined");
+                }
+            }
+
+            td.close_list();
+            send(td);
+
+            for(size_t i=0; i<results.size(); i++) 
+    	    memcached_result_free(results[i]);
+            return;
         }
-
-        goto L_arg_ok;
-
     L_badarg:
         send(badarg(td));
         return;
-
-    L_arg_ok:
-        memcached_return rc;
-        rc = memcached_mget(m_cache, (const char**)keys, lengths, num_keys);
-
-        if (rc != MEMCACHED_SUCCESS)
-        {
-            send(error(td, rc));
-            return;
-        }
-
-        vector<memcached_result_st*> results;
-
-        // [ {Key, Value, Flag}, ... ]
-        memcached_result_st *result;
-        while ( (result = memcached_fetch_result(m_cache, NULL, &rc)) ) 
-        {
-            results.push_back(result);
-            //std::cout << "result: " << std::string(result->key, result->key_length) << "\r\n";
-        }
-
-        ok(td, true);
-        td.open_list();
-
-        int ri = 0;
-        for(size_t i=0; i<num_keys; i++)
-        {
-            memcached_result_st* r = NULL;
-            for(size_t j=ri; j<results.size(); j++)
-            {
-                if (lengths[i] == results[j]->key_length &&
-                    memcmp(keys[i], results[j]->item_key, lengths[i]) == 0)
-                {
-                    r = results[j];
-                    //ri = j+1;
-                    break;
-                }
-            }
-            if (r)
-            {
-                td.open_tuple();
-                //td.add_buf(result->key, result->key_length);
-                td.add_buf(r->value.string, r->value.end-r->value.string);
-                td.add_uint(r->item_flags);
-                td.close_tuple();
-            }
-            else
-            {
-                td.add_atom((char*)"undefined");
-            }
-        }
-
-        td.close_list();
-        send(td);
-
-        for(size_t i=0; i<results.size(); i++) 
-            memcached_result_free(results[i]);
     }
 
     void doSet(uint32_t seq, IOVec& vec, bool wantReply)
