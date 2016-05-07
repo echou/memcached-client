@@ -377,12 +377,11 @@ private:
         TermData td = createReply(seq);
 
         // <<Expires:32, KeyLen:32, Key/binary>>
-        uint32_t expires;
+        uint32_t expires = 0;
         size_t klen;
         char *key;
 
-        if (!(vec.get(expires) &&
-              vec.get(klen) &&
+        if (!(vec.get(klen) &&
               vec.get(key, klen)))
         {
             if (wantReply)
